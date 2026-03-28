@@ -314,6 +314,7 @@ def show_token_similarity(
 
     token_sims = get_token_similarities(model, entry, vector, layers=layers)
 
+    # ToDo: In multi-layer also show which tokens are labeled with the behaviour we are testing for
     if multilayer:
         html_str = render_multilayer_html(token_sims, layers=layers)
     else:

@@ -135,7 +135,7 @@ class TokenSelection:
         elif self.strategy == "all":
             return (window_start, window_end)
 
-        elif self.strategy == "first_n":
+        elif self.strategy == "first_n": # ToDo: I think window_start + actual_n could be larger than window_len?
             actual_n = min(self.n, window_len)  # graceful for short spans
             return (window_start, window_start + actual_n)
 

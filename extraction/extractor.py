@@ -225,6 +225,7 @@ class ActivationExtractor:
             encoding = self.model.tokenize(formatted_text, return_offsets_mapping=False)
             token_ids = encoding["input_ids"][0]  # (seq_len,)
 
+            # ToDo: Shouldn't we just extract activations up to the last labeled sentence?
             seq_len = len(token_ids)
             if seq_len > self.max_seq_len:
                 token_ids = token_ids[: self.max_seq_len]
@@ -239,7 +240,7 @@ class ActivationExtractor:
                     # Access layers in forward-pass order (CRITICAL for nnsight)
                     for layer_idx in required_layers:
                         if layer_idx >= self.model.num_layers:
-                            continue
+                            continue # ToDo: Shouldn't we put a tracer.stop() here?
                         # (1, seq_len, hidden_dim) → squeeze batch dim
                         layer_activations[layer_idx] = (
                             self.model.layers_output[layer_idx]
@@ -262,11 +263,12 @@ class ActivationExtractor:
                             .save()
                         )
                     elif stop_after_layer:
+                        # ToDo: Does this work?? Feels like it does nothing
                         # Early stopping — skip layers after max_required_layer
                         tracer.stop()
 
             logits: torch.Tensor | None = logits_saved  # None or (seq_len, vocab_size)
-
+            # breakpoint() 
             # 6. For each annotation × spec → slice & store
             for token_span in token_spans:
                 # Clamp token span to actual (possibly truncated) seq_len
