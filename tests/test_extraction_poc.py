@@ -524,6 +524,83 @@ class TestVectorCreation:
             print(f"\n✅ Save/load round-trip: {len(loaded)} vectors")
 
 
+class TestProbabilityAwareAggregation:
+    """Test the three probability-aware TokenSelection aggregation modes."""
+
+    def _make_prob_plan(self, model):
+        from little_steer import ExtractionPlan, ExtractionSpec, TokenSelection
+        n = model.num_layers
+        layers = [n // 2, 3 * n // 4]
+        return ExtractionPlan("prob_aware_test", specs={
+            "top_confident": ExtractionSpec(
+                TokenSelection("all", aggregation="top_confident_mean",
+                               confidence_threshold=0.5),
+                layers=layers,
+            ),
+            "entropy_weighted": ExtractionSpec(
+                TokenSelection("all", aggregation="entropy_weighted_mean"),
+                layers=layers,
+            ),
+            "decision_point": ExtractionSpec(
+                TokenSelection("all", aggregation="decision_point_mean",
+                               high_entropy_fraction=0.3),
+                layers=layers,
+            ),
+            # Baseline: plain mean for shape comparison
+            "whole_sentence": ExtractionSpec(
+                TokenSelection("all", aggregation="mean"),
+                layers=layers,
+            ),
+        })
+
+    def test_prob_aware_specs_run(self, model, dataset):
+        """All three probability-aware aggregations complete without error."""
+        from little_steer import ActivationExtractor
+        plan = self._make_prob_plan(model)
+        extractor = ActivationExtractor(model, max_seq_len=2048)
+        result = extractor.extract(dataset, plan, show_progress=False)
+
+        print(f"\n{result.summary()}")
+        assert len(result.specs()) >= 1, "Should have at least some specs"
+
+    def test_prob_aware_shapes(self, model, dataset):
+        """Probability-aware aggregations produce (hidden_dim,) tensors like mean."""
+        from little_steer import ActivationExtractor
+        plan = self._make_prob_plan(model)
+        extractor = ActivationExtractor(model, max_seq_len=2048)
+        result = extractor.extract(dataset[:1], plan, show_progress=False)
+
+        for spec_name in ("top_confident", "entropy_weighted", "decision_point"):
+            for label in result.labels():
+                for layer in result.layers():
+                    acts = result.get(spec_name, label, layer)
+                    for a in acts:
+                        assert a.shape == (model.hidden_size,), (
+                            f"{spec_name} shape mismatch: got {a.shape}, "
+                            f"expected ({model.hidden_size},)"
+                        )
+                        print(f"  ✅ {spec_name}/{label}/L{layer}: {a.shape}")
+
+    def test_prob_aware_vectors(self, model, dataset):
+        """Can build steering vectors from probability-aware extraction specs."""
+        from little_steer import ActivationExtractor, SteeringVectorBuilder
+        plan = self._make_prob_plan(model)
+        extractor = ActivationExtractor(model, max_seq_len=2048)
+        result = extractor.extract(dataset, plan, show_progress=False)
+
+        builder = SteeringVectorBuilder()
+        vectors = builder.build(
+            result,
+            target_label="I_REPHRASE_PROMPT",
+            methods=["mean_centering", "pca"],
+        )
+        print(f"\n{vectors.summary()}")
+        assert len(vectors) > 0, "Should produce vectors from prob-aware specs"
+        for v in vectors:
+            if v.extraction_spec in ("top_confident", "entropy_weighted", "decision_point"):
+                assert v.vector.shape == (model.hidden_size,)
+
+
 class TestEndToEnd:
     """Full end-to-end pipeline demonstration."""
 

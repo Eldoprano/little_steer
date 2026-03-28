@@ -75,12 +75,29 @@ from .vectors import (
 )
 from .probing import (
     BehaviorScore,
+    TokenSimilarities,
+    EvaluationResult,
     probe_text,
     score_dataset,
+    get_token_similarities,
+    evaluate_dataset,
 )
 from .steering import (
     steered_generate,
 )
+
+try:
+    from . import visualization
+    from .visualization import (
+        render_token_similarity_html,
+        render_multilayer_html,
+        show_token_similarity,
+        plot_layer_discrimination,
+        plot_layer_metrics,
+        plot_confusion_matrix,
+    )
+except ImportError:
+    pass
 
 # Lazy import: models requires nnterp (optional dependency for extraction)
 def __getattr__(name: str):
@@ -103,6 +120,7 @@ __all__ = [
     "models",
     "extraction",
     "vectors",
+    "visualization",
     # Data
     "AnnotatedSpan",
     "ConversationEntry",
@@ -132,8 +150,19 @@ __all__ = [
     "SteeringVectorBuilder",
     # Probing (reading)
     "BehaviorScore",
+    "TokenSimilarities",
+    "EvaluationResult",
     "probe_text",
     "score_dataset",
+    "get_token_similarities",
+    "evaluate_dataset",
     # Steering (writing)
     "steered_generate",
+    # Visualization
+    "render_token_similarity_html",
+    "render_multilayer_html",
+    "show_token_similarity",
+    "plot_layer_discrimination",
+    "plot_layer_metrics",
+    "plot_confusion_matrix",
 ]
