@@ -115,8 +115,9 @@ class ActivationExtractor:
                 f"Check your ExtractionPlan specs."
             )
 
-        max_required_layer = max(required_layers)
-        stop_after_layer = max_required_layer < self.model.num_layers - 1
+        valid_required_layers = [l for l in required_layers if l < self.model.num_layers]
+        max_required_layer = max(valid_required_layers) if valid_required_layers else -1
+        stop_after_layer = 0 <= max_required_layer < self.model.num_layers - 1
 
         # Check if any spec needs token logits (probability-aware pooling).
         # When True, we run the full forward pass (no tracer.stop()) to get
@@ -225,11 +226,12 @@ class ActivationExtractor:
             encoding = self.model.tokenize(formatted_text, return_offsets_mapping=False)
             token_ids = encoding["input_ids"][0]  # (seq_len,)
 
-            # ToDo: Shouldn't we just extract activations up to the last labeled sentence?
-            seq_len = len(token_ids)
-            if seq_len > self.max_seq_len:
-                token_ids = token_ids[: self.max_seq_len]
-                seq_len = self.max_seq_len
+            # Truncate to the minimum of max_seq_len and the last annotated token.
+            # For causal LMs, activations at position i don't depend on later tokens,
+            # so running the forward pass only up to the last annotation is equivalent.
+            last_annotated_token = max(ts.token_end for ts in token_spans)
+            seq_len = min(len(token_ids), self.max_seq_len, last_annotated_token)
+            token_ids = token_ids[:seq_len]
 
             # 5. Run model forward pass ONCE — collect required layers
             layer_activations: dict[int, torch.Tensor] = {}
@@ -240,7 +242,7 @@ class ActivationExtractor:
                     # Access layers in forward-pass order (CRITICAL for nnsight)
                     for layer_idx in required_layers:
                         if layer_idx >= self.model.num_layers:
-                            continue # ToDo: Shouldn't we put a tracer.stop() here?
+                            break  # required_layers is sorted; all remaining are also out of range
                         # (1, seq_len, hidden_dim) → squeeze batch dim
                         layer_activations[layer_idx] = (
                             self.model.layers_output[layer_idx]
@@ -263,8 +265,9 @@ class ActivationExtractor:
                             .save()
                         )
                     elif stop_after_layer:
-                        # ToDo: Does this work?? Feels like it does nothing
-                        # Early stopping — skip layers after max_required_layer
+                        # Early stopping — skip layers after max_required_layer.
+                        # nnsight executes this after all layer saves registered above,
+                        # so the forward pass halts immediately after max_required_layer.
                         tracer.stop()
 
             logits: torch.Tensor | None = logits_saved  # None or (seq_len, vocab_size)
