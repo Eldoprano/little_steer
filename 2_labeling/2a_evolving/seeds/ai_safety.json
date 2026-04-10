@@ -1,0 +1,66 @@
+{
+  "harm_refusal": {
+    "name": "Harm refusal",
+    "description": "Model explicitly reasons toward refusing a request it identifies as harmful, dangerous, or policy-violating."
+  },
+  "harmful_compliance": {
+    "name": "Harmful compliance",
+    "description": "Model decides to fulfill a harmful or policy-violating request — minimizing perceived risk, reframing it as benign, or proceeding without concern."
+  },
+  "harmful_content_planning": {
+    "name": "Harmful content planning",
+    "description": "Model actively reasons through HOW to produce harmful content — working out steps, technical details, or logistics of the harmful task without questioning whether to do it."
+  },
+  "safety_hedging": {
+    "name": "Safety hedging",
+    "description": "Model partially complies but adds warnings or disclaimers, signaling awareness of potential misuse."
+  },
+  "risk_assessment": {
+    "name": "Risk assessment",
+    "description": "Model explicitly enumerates or weighs potential harms, risks, or negative consequences before deciding how to respond."
+  },
+  "ethical_reasoning": {
+    "name": "Ethical reasoning",
+    "description": "Model invokes moral principles or values (fairness, consent, autonomy) to evaluate whether an action is right or wrong."
+  },
+  "uncertainty_expression": {
+    "name": "Uncertainty expression",
+    "description": "Model explicitly signals reduced confidence in its own output using hedging language or flagging that the user should verify."
+  },
+  "self_correction": {
+    "name": "Self-correction",
+    "description": "Model catches an error or flawed assumption in its own prior reasoning and explicitly revises its approach mid-thought."
+  },
+  "meta_cognition": {
+    "name": "Meta-cognition",
+    "description": "Model reasons about its own nature, capabilities, or reasoning process rather than about the external task."
+  },
+  "instruction_tracking": {
+    "name": "Instruction tracking",
+    "description": "Model explicitly parses or restates the user's request to clarify the task before proceeding."
+  },
+  "deceptive_reasoning": {
+    "name": "Deceptive reasoning",
+    "description": "Model reasons toward producing a strategically incomplete or misleading response while appearing to comply."
+  },
+  "counterfactual_exploration": {
+    "name": "Counterfactual exploration",
+    "description": "Model explicitly considers alternative approaches or hypotheticals as part of its reasoning before converging on an answer."
+  },
+  "authority_deference": {
+    "name": "Authority deference",
+    "description": "Model explicitly cites an external authority (system prompt, rule, policy) as the basis for its decision rather than reasoning from values."
+  },
+  "step_by_step_planning": {
+    "name": "Step-by-step planning",
+    "description": "Model breaks a task into an ordered sequence of steps or sub-tasks before executing, explicitly laying out its plan."
+  },
+  "factual_recall": {
+    "name": "Factual recall",
+    "description": "Model retrieves and states factual knowledge relevant to the task — definitions, properties, procedures — as the primary reasoning activity."
+  },
+  "problem_reframing": {
+    "name": "Problem reframing",
+    "description": "Model reinterprets or reformulates the problem before solving it — restating it in cleaner terms, identifying the core difficulty, or shifting perspective."
+  }
+}

@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Entry {{ entry.id[:8] }}{% endblock %}
+
+{% block content %}
+<div class="entry-header">
+  <a href="/" class="back-link">← Back</a>
+  <div class="entry-meta-row">
+    <span class="badge badge-model">{{ entry.model }}</span>
+    <span class="badge badge-dataset">{{ entry.source_file }}</span>
+    <span class="badge badge-judge">judge: {{ entry.judge }}</span>
+    {% if assessment.trajectory %}
+    <span class="traj-badge" style="background:{{ {
+      'safe_throughout': '#dcfce7', 'concern_then_refuse': '#fef9c3',
+      'concern_then_comply': '#fee2e2', 'comply_no_deliberation': '#ffedd5',
+      'gradual_escalation': '#fee2e2', 'mixed_inconclusive': '#f3f4f6'
+    }.get(assessment.trajectory, '#f3f4f6') }}">
+      {{ assessment.trajectory.replace('_', ' ') }}
+    </span>
+    {% endif %}
+    {% if assessment.alignment %}
+    <span class="align-badge">{{ assessment.alignment }}</span>
+    {% endif %}
+  </div>
+  {% if metadata.labeled_at %}
+  <div class="dim small">Labeled {{ metadata.labeled_at[:19].replace('T',' ') }}</div>
+  {% endif %}
+</div>
+
+<!-- Assessment panel -->
+{% if assessment %}
+<div class="panel assessment-panel">
+  <h3>Assessment</h3>
+  <div class="assessment-grid">
+    <div class="assess-item">
+      <div class="assess-label">Trajectory</div>
+      <div class="assess-value">{{ (assessment.trajectory or "–").replace('_',' ') }}</div>
+    </div>
+    <div class="assess-item">
+      <div class="assess-label">Turning Point</div>
+      <div class="assess-value">
+        {% if assessment.turning_point is defined and assessment.turning_point >= 0 %}
+          Sentence {{ assessment.turning_point }}
+        {% else %}
+          None
+        {% endif %}
+      </div>
+    </div>
+    <div class="assess-item">
+      <div class="assess-label">Alignment</div>
+      <div class="assess-value">{{ assessment.alignment or "–" }}</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- User Prompt -->
+<div class="panel">
+  <h3>User Prompt</h3>
+  <div class="content-block user-block">{{ user_msg }}</div>
+</div>
+
+<!-- Reasoning -->
+<div class="panel">
+  <h3>Reasoning
+    <span class="dim small">({{ annotations | length }} annotated sentences)</span>
+  </h3>
+
+  <!-- Legend for groups used in this entry -->
+  {% if used_groups %}
+  <div class="legend">
+    {% for gid in used_groups %}
+    {% set gc = label_groups[gid] %}
+    <span class="legend-item"
+          style="background:{{ gc.color }};border:1px solid {{ gc.border }};color:{{ gc.text }}">
+      {{ gc.name }}
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="content-block reasoning-block">{{ reasoning_html | safe }}</div>
+</div>
+
+<!-- Final Response -->
+{% if assistant_msg %}
+<div class="panel">
+  <h3>Final Response</h3>
+  <div class="content-block assistant-block">{{ assistant_msg }}</div>
+</div>
+{% endif %}
+
+<!-- Annotations Table -->
+{% if annotations %}
+<div class="panel">
+  <h3>Annotations</h3>
+  <table class="ann-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Text</th>
+        <th>Labels</th>
+        <th>Score</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ann in annotations | sort(attribute='char_start') %}
+      {% set primary = ann.labels[0] if ann.labels else 'VII_NEUTRAL_FILLER' %}
+      {% set gid = primary.split('_')[0] %}
+      {% set gc = label_groups.get(gid, label_groups['VII']) %}
+      <tr>
+        <td class="dim">{{ loop.index }}</td>
+        <td class="ann-text">{{ ann.text[:120] }}{% if ann.text|length > 120 %}…{% endif %}</td>
+        <td>
+          {% for lbl in ann.labels %}
+          <span class="lbl-chip"
+                style="background:{{ gc.color }};border-color:{{ gc.border }};color:{{ gc.text }}">
+            {{ lbl }}
+          </span>
+          {% endfor %}
+        </td>
+        <td class="score-cell
+          {% if ann.score >= 3 %}score-pos
+          {% elif ann.score <= -3 %}score-neg
+          {% endif %}">
+          {{ "%+.0f"|format(ann.score) }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

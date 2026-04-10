@@ -1,0 +1,38 @@
+# LMStudio config — uses locally running OpenAI-compatible server
+# Start LMStudio, load the model, and enable the local server (default port 1234).
+# The api_key value is ignored by LMStudio but must be non-empty.
+
+judge:
+  name: gpt-oss-20b
+  model_id: gpt-oss-20b          # must match the model name as LMStudio reports it
+  backend: custom
+  base_url: http://localhost:1234/v1
+  api_key_source: lm-studio-key  # any non-empty value; add "lm-studio-key": "lm-studio" to .secrets.json
+  temperature: 0.4
+  max_tokens: 20000
+  timeout: 300                   # local models can be slow; generous timeout
+  reasoning_effort: low
+
+secrets_file: "../../.secrets.json"
+prompt_file: "prompt.md"
+
+pipeline:
+  max_retries: 3
+  retry_delay: 3.0
+  checkpoint_every: 5            # checkpoint more often for local runs (easier to recover)
+  max_workers: 1                 # local single-GPU: serialize requests
+  response_sentences: 5
+  skip_no_reasoning: true
+  skip_no_response: false
+  overwrite_existing: false
+  max_reasoning_chars: 8000      # crop long reasonings to keep prompt within context window
+
+mapper:
+  fuzzy_threshold: 0.9           # slightly more lenient for smaller local models
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+output:
+  dir: "data/labeled"
+  suffix: ""
+  in_place: false

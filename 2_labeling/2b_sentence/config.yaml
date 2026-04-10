@@ -1,0 +1,41 @@
+# ── Judge LLM backend ─────────────────────────────────────────────────────────
+judge:
+  name: gemini-2.0-flash           # human-readable name written to entry.judge
+  model_id: gemini-2.0-flash-001   # exact model string sent to the API
+  backend: gemini                  # openai | gemini | openrouter | vllm | custom
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  api_key_source: gemini-api-key   # key name in .secrets.json
+  temperature: 0.2
+  max_tokens: 8192
+  timeout: 120                     # seconds per API call
+  service_tier: flex
+
+# ── Secrets file (relative to this config file) ───────────────────────────────
+secrets_file: "../../.secrets.json"
+
+# ── Prompt template (relative to this config file) ────────────────────────────
+prompt_file: "prompt.md"
+
+# ── Pipeline settings ─────────────────────────────────────────────────────────
+pipeline:
+  max_retries: 3                 # LLM call retries on parse failure or network error
+  retry_delay: 2.0               # base seconds between retries (exponential: delay * 2^attempt)
+  checkpoint_every: 10           # write checkpoint after every N successfully labeled entries
+  max_workers: 4                 # concurrent LLM calls (thread pool)
+  response_sentences: 5          # how many sentences of assistant response to include in prompt
+  skip_no_reasoning: true        # skip entries without a "reasoning" message
+  skip_no_response: false        # skip entries without an "assistant" message
+  overwrite_existing: false      # if false, skip entries that already have annotations
+  max_reasoning_chars: null      # crop reasoning to this many chars (at nearest sentence boundary); null = no limit
+
+# ── Sentence mapping ──────────────────────────────────────────────────────────
+mapper:
+  fuzzy_threshold: 0.85          # minimum SequenceMatcher ratio for fuzzy matches
+  max_lookahead_multiplier: 5    # max search window = max(500, multiplier * sentence_len)
+  max_lookahead_min: 500         # minimum lookahead in characters
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  dir: "data/labeled"            # relative to this config file
+  suffix: ""                     # optional suffix before .jsonl (e.g. "_labeled")
+  in_place: false                # if true, overwrite input files atomically

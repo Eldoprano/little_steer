@@ -1,0 +1,24 @@
+[project]
+name = "sentence-labeler"
+version = "0.1.0"
+description = "Sentence-level LLM labeler for reasoning traces"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "pyyaml>=6.0",
+    "flask>=3.0",
+    "thesis-schema",
+]
+
+[project.scripts]
+sentence-labeler = "sentence_labeler.run:cli"
+
+[tool.uv.sources]
+thesis-schema = { path = "../../data" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

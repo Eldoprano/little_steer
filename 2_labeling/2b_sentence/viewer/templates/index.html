@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Reasoning Viewer — {{ total }} entries{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Labeled Reasoning Traces</h1>
+  <span class="stat-badge">{{ total }} entries</span>
+</div>
+
+<!-- Filter bar -->
+<div class="filter-bar">
+  <select id="f-dataset" onchange="applyFilters()">
+    <option value="">All datasets</option>
+    {% for ds in filters.datasets %}
+    <option value="{{ ds }}">{{ ds }}</option>
+    {% endfor %}
+  </select>
+
+  <select id="f-model" onchange="applyFilters()">
+    <option value="">All models</option>
+    {% for m in filters.models %}
+    <option value="{{ m }}">{{ m }}</option>
+    {% endfor %}
+  </select>
+
+  <select id="f-trajectory" onchange="applyFilters()">
+    <option value="">All trajectories</option>
+    {% for t in filters.trajectories %}
+    <option value="{{ t }}">{{ t.replace('_', ' ') }}</option>
+    {% endfor %}
+  </select>
+
+  <select id="f-alignment" onchange="applyFilters()">
+    <option value="">All alignments</option>
+    {% for a in filters.alignments %}
+    <option value="{{ a }}">{{ a }}</option>
+    {% endfor %}
+  </select>
+
+  <input type="text" id="f-search" placeholder="Search prompt…"
+         oninput="applyFilters()" class="search-input">
+
+  <button onclick="clearFilters()" class="btn-clear">Clear</button>
+  <span id="count-label" class="count-label"></span>
+</div>
+
+<!-- Cards grid -->
+<div class="cards-grid" id="cards-grid"></div>
+
+<script>
+const ALL = {{ summaries_json | safe }};
+
+const TRAJECTORY_COLORS = {
+  safe_throughout:       "#dcfce7",
+  concern_then_refuse:   "#fef9c3",
+  concern_then_comply:   "#fee2e2",
+  comply_no_deliberation:"#ffedd5",
+  gradual_escalation:    "#fee2e2",
+  mixed_inconclusive:    "#f3f4f6",
+};
+
+function trajectoryLabel(t) {
+  return (t || "unknown").replace(/_/g, " ");
+}
+
+function scoreColor(score) {
+  if (score >= 2)  return "#15803d";
+  if (score >= 0)  return "#374151";
+  if (score >= -2) return "#b45309";
+  return "#dc2626";
+}
+
+function renderCard(e) {
+  const tcolor = TRAJECTORY_COLORS[e.trajectory] || "#f3f4f6";
+  const sc = scoreColor(e.avg_score);
+  const sign = e.avg_score >= 0 ? "+" : "";
+  return `
+<a class="card" href="/entry/${e.id}">
+  <div class="card-badges">
+    <span class="badge badge-model" title="${e.model}">${shortModel(e.model)}</span>
+    <span class="badge badge-dataset">${e.source_file}</span>
+  </div>
+  <div class="card-trajectory" style="background:${tcolor}">
+    ${trajectoryLabel(e.trajectory)}
+  </div>
+  <p class="card-prompt">${escHtml(e.user_prompt)}</p>
+  <div class="card-footer">
+    <span style="color:${sc};font-weight:600">${sign}${e.avg_score.toFixed(1)} avg</span>
+    <span class="dim">${e.n_annotations} sentences</span>
+    <span class="dim">tp: ${e.turning_point >= 0 ? e.turning_point : "–"}</span>
+  </div>
+</a>`;
+}
+
+function shortModel(m) {
+  // Keep last path segment, truncate to 24 chars
+  const parts = m.split("/");
+  const s = parts[parts.length - 1];
+  return s.length > 24 ? s.slice(0, 22) + "…" : s;
+}
+
+function escHtml(s) {
+  return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function applyFilters() {
+  const ds   = document.getElementById("f-dataset").value;
+  const mod  = document.getElementById("f-model").value;
+  const traj = document.getElementById("f-trajectory").value;
+  const aln  = document.getElementById("f-alignment").value;
+  const q    = document.getElementById("f-search").value.toLowerCase();
+
+  const filtered = ALL.filter(e => {
+    if (ds   && e.source_file !== ds)     return false;
+    if (mod  && e.model !== mod)          return false;
+    if (traj && e.trajectory !== traj)    return false;
+    if (aln  && e.alignment !== aln)      return false;
+    if (q    && !e.user_prompt.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  const grid = document.getElementById("cards-grid");
+  grid.innerHTML = filtered.map(renderCard).join("");
+  document.getElementById("count-label").textContent =
+    filtered.length === ALL.length ? "" : `${filtered.length} shown`;
+}
+
+function clearFilters() {
+  ["f-dataset","f-model","f-trajectory","f-alignment"].forEach(id =>
+    document.getElementById(id).value = "");
+  document.getElementById("f-search").value = "";
+  applyFilters();
+}
+
+// Initial render
+applyFilters();
+</script>
+{% endblock %}

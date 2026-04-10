@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Label Evolution Explorer</title>
+<style>
+  /* ── Everforest dark palette ── */
+  :root {
+    --bg:       #2d353b;
+    --bg-dim:   #232a2e;
+    --bg-1:     #343f44;
+    --bg-2:     #3d484d;
+    --bg-3:     #475258;
+    --fg:       #d3c6aa;
+    --fg-dim:   #9da9a0;
+    --red:      #e67e80;
+    --orange:   #e69875;
+    --yellow:   #dbbc7f;
+    --green:    #a7c080;
+    --aqua:     #83c092;
+    --blue:     #7fbbb3;
+    --purple:   #d699b6;
+    --grey:     #7a8478;
+    --panel-w:  280px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg-dim); color: var(--fg);
+    height: 100vh; display: flex; flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    flex: none; background: var(--bg-1); border-bottom: 1px solid var(--bg-3);
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+  }
+  header h1 { font-size: 1rem; font-weight: 600; color: var(--green); letter-spacing: 0.02em; }
+  header .subtitle { font-size: 0.78rem; color: var(--fg-dim); }
+
+  /* ── Layout ── */
+  .workspace { flex: 1; display: flex; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    flex: none; width: var(--panel-w); background: var(--bg-1);
+    border-right: 1px solid var(--bg-3);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sidebar-header {
+    flex: none; padding: 14px 16px 10px; border-bottom: 1px solid var(--bg-3);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .sidebar-header h2 {
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--fg-dim);
+  }
+  .btn-link {
+    background: none; border: 1px solid var(--bg-3); color: var(--aqua);
+    font-size: 0.68rem; cursor: pointer; padding: 2px 7px; border-radius: 4px;
+  }
+  .btn-link:hover { background: var(--bg-2); }
+  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 6px; }
+
+  .run-item {
+    display: flex; align-items: flex-start; gap: 7px; padding: 7px 9px;
+    border-radius: 5px; cursor: pointer; margin-bottom: 1px;
+    border: 1px solid transparent; transition: background 0.1s;
+  }
+  .run-item:hover { background: var(--bg-2); }
+  .run-item.active { background: var(--bg-2); border-color: var(--bg-3); }
+  .run-item input[type=checkbox] { flex: none; margin-top: 3px; accent-color: var(--green); cursor: pointer; }
+  .run-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 4px; }
+  .run-info { flex: 1; min-width: 0; }
+  .run-name {
+    font-size: 0.76rem; font-weight: 500; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .run-meta { font-size: 0.66rem; color: var(--fg-dim); margin-top: 1px; }
+
+  /* ── Main ── */
+  .main { flex: 1; display: flex; overflow: hidden; flex-direction: column; }
+  .toolbar {
+    flex: none; padding: 10px 18px; border-bottom: 1px solid var(--bg-3);
+    display: flex; align-items: center; gap: 10px; background: var(--bg-1);
+  }
+  .search-box {
+    flex: 1; max-width: 300px; background: var(--bg-dim); border: 1px solid var(--bg-3);
+    border-radius: 5px; padding: 5px 11px; color: var(--fg); font-size: 0.8rem; outline: none;
+  }
+  .search-box::placeholder { color: var(--grey); }
+  .search-box:focus { border-color: var(--green); }
+  .sort-select {
+    background: var(--bg-dim); border: 1px solid var(--bg-3); border-radius: 5px;
+    padding: 5px 9px; color: var(--fg); font-size: 0.76rem; cursor: pointer; outline: none;
+  }
+  .sort-select:focus { border-color: var(--green); }
+  .sort-select option { background: var(--bg-1); }
+  .toolbar-info { font-size: 0.74rem; color: var(--grey); margin-left: auto; }
+
+  /* ── Content area ── */
+  .content-area { flex: 1; display: flex; overflow: hidden; position: relative; }
+
+  /* ── Label grid ── */
+  .label-grid-wrap { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  .label-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 9px; }
+
+  .label-card {
+    background: var(--bg-1); border: 1px solid var(--bg-3); border-radius: 7px;
+    padding: 12px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 7px;
+    transition: border-color 0.15s, background 0.1s;
+  }
+  .label-card:hover { border-color: var(--green); background: var(--bg-2); }
+  .label-card.selected { border-color: var(--aqua); background: var(--bg-2); }
+  .label-name { font-size: 0.84rem; font-weight: 600; color: var(--fg); }
+  .run-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+  .run-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 2px 7px; border-radius: 10px; font-size: 0.63rem; font-weight: 500;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .label-desc { font-size: 0.74rem; color: var(--fg-dim); line-height: 1.45; }
+  .label-total { font-size: 0.68rem; color: var(--grey); }
+
+  /* ── Detail panel ── */
+  .detail-panel {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 520px;
+    background: var(--bg-1); border-left: 1px solid var(--bg-3);
+    display: flex; flex-direction: column; overflow: hidden;
+    transform: translateX(100%); transition: transform 0.22s ease;
+    z-index: 10;
+  }
+  .detail-panel.open { transform: translateX(0); }
+
+  .detail-header {
+    flex: none; padding: 14px 18px 12px; border-bottom: 1px solid var(--bg-3);
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .detail-title { flex: 1; min-width: 0; }
+  .detail-title h3 { font-size: 0.95rem; font-weight: 700; color: var(--green); }
+  .detail-title p { font-size: 0.73rem; color: var(--fg-dim); margin-top: 4px; line-height: 1.5; }
+  .btn-close {
+    flex: none; background: none; border: 1px solid var(--bg-3); color: var(--fg-dim);
+    cursor: pointer; font-size: 0.85rem; line-height: 1; padding: 3px 7px; border-radius: 4px;
+  }
+  .btn-close:hover { color: var(--red); border-color: var(--red); }
+
+  .detail-scroll { flex: 1; overflow-y: auto; padding: 14px 18px; }
+
+  .section-label {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--fg-dim); margin-bottom: 9px; margin-top: 18px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-label:first-child { margin-top: 0; }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--bg-3); }
+
+  .sample-card {
+    background: var(--bg-dim); border: 1px solid var(--bg-3); border-radius: 7px;
+    margin-bottom: 10px; overflow: hidden;
+  }
+  .sample-header {
+    padding: 7px 12px; border-bottom: 1px solid var(--bg-3);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .sample-run-tag {
+    font-size: 0.63rem; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+    border: 1px solid transparent;
+  }
+  .sample-stem { font-size: 0.63rem; color: var(--grey); font-family: monospace; }
+  .sample-prompt {
+    font-size: 0.76rem; color: var(--yellow); padding: 8px 12px;
+    border-bottom: 1px solid var(--bg-3); background: rgba(219,188,127,0.05);
+    line-height: 1.5;
+  }
+  .sample-context {
+    font-size: 0.73rem; color: var(--fg-dim); padding: 8px 12px;
+    border-bottom: 1px solid var(--bg-3); line-height: 1.55;
+    background: rgba(255,255,255,0.015);
+  }
+  .context-tag {
+    font-size: 0.6rem; font-weight: 700; color: var(--grey);
+    text-transform: uppercase; letter-spacing: 0.1em; display: block; margin-bottom: 4px;
+  }
+  .sample-para { font-size: 0.78rem; color: var(--fg); padding: 10px 12px; line-height: 1.6; }
+  .sample-just {
+    font-size: 0.7rem; color: var(--fg-dim); padding: 6px 12px 10px;
+    border-top: 1px solid var(--bg-3); line-height: 1.5;
+  }
+  .just-tag { font-weight: 700; color: var(--aqua); }
+
+  .loading { color: var(--fg-dim); font-size: 0.8rem; padding: 20px 0; text-align: center; }
+  .empty-msg { font-size: 0.78rem; color: var(--grey); padding-bottom: 12px; }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--grey); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Label Evolution Explorer</h1>
+  <span class="subtitle">Select runs to compare labels · click a label to inspect samples</span>
+</header>
+
+<div class="workspace">
+
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h2>Runs</h2>
+      <div style="display:flex;gap:4px">
+        <button class="btn-link" id="btn-all"   onclick="selectAll()">All</button>
+        <button class="btn-link" id="btn-none"  onclick="selectNone()">None</button>
+        <button class="btn-link" id="btn-empty" onclick="selectEmpty()">Empty</button>
+      </div>
+    </div>
+    <div class="sidebar-scroll" id="run-list">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="toolbar">
+      <input class="search-box" id="search" type="text" placeholder="Filter labels…" oninput="renderLabels()">
+      <select class="sort-select" id="sort-by" onchange="renderLabels()">
+        <option value="usage">Sort: usage</option>
+        <option value="alpha">Sort: A–Z</option>
+        <option value="runs">Sort: # runs</option>
+      </select>
+      <span class="toolbar-info" id="toolbar-info"></span>
+    </div>
+
+    <div class="content-area">
+      <div class="label-grid-wrap">
+        <div class="label-grid" id="label-grid">
+          <div class="loading">Loading&hellip;</div>
+        </div>
+      </div>
+
+      <div class="detail-panel" id="detail-panel">
+        <div class="detail-header">
+          <div class="detail-title">
+            <h3 id="detail-name"></h3>
+            <p  id="detail-desc"></p>
+          </div>
+          <button class="btn-close" id="btn-close">&#x2715;</button>
+        </div>
+        <div class="detail-scroll" id="detail-scroll"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Everforest-flavoured run colours ─────────────────────────────────────────
+const RUN_COLORS = [
+  '#a7c080','#83c092','#7fbbb3','#d699b6','#dbbc7f',
+  '#e69875','#e67e80','#4c9a6b','#5a9ea8','#9d7cd8',
+  '#c3a05c','#b86467','#6dae8b','#7ab8c0','#c48aad',
+  '#d4a95a','#cc8844','#8cbf6a','#6fa8c8','#b07baa',
+];
+
+// ── State ────────────────────────────────────────────────────────────────────
+let allRuns      = [];
+let selectedRuns = new Set();
+let runColor     = {};   // run name → hex
+let allLabels    = [];
+let selectedLabel = null;
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+document.getElementById('btn-close').addEventListener('click', closeDetail);
+
+async function init() {
+  const runs = await fetch('/api/runs').then(r => r.json());
+  allRuns = runs;
+  runs.forEach((r, i) => { runColor[r.name] = RUN_COLORS[i % RUN_COLORS.length]; });
+
+  // Default: *_empty runs that have labels; fallback to all with labels
+  const empties = runs.filter(r => r.is_empty && r.label_count > 0);
+  (empties.length ? empties : runs.filter(r => r.label_count > 0))
+    .forEach(r => selectedRuns.add(r.name));
+
+  renderRunList();
+  await fetchLabels();
+}
+
+// ── Sidebar ──────────────────────────────────────────────────────────────────
+function renderRunList() {
+  const el = document.getElementById('run-list');
+  if (!allRuns.length) { el.innerHTML = '<div class="loading">No runs.</div>'; return; }
+  el.innerHTML = allRuns.map(r => {
+    const on = selectedRuns.has(r.name);
+    const c  = runColor[r.name];
+    return `<div class="run-item${on ? ' active' : ''}" data-run="${esc(r.name)}">
+      <input type="checkbox" ${on ? 'checked' : ''} data-run="${esc(r.name)}">
+      <span class="run-dot" style="background:${c}"></span>
+      <div class="run-info">
+        <div class="run-name" title="${esc(r.name)}">${esc(r.name)}</div>
+        <div class="run-meta">${r.label_count} labels &middot; ${r.total_usage} uses</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Event delegation — one listener on the container
+  el.onclick = e => {
+    const item = e.target.closest('.run-item');
+    if (!item) return;
+    const name = item.dataset.run;
+    if (selectedRuns.has(name)) selectedRuns.delete(name);
+    else selectedRuns.add(name);
+    renderRunList();
+    fetchLabels();
+  };
+}
+
+function selectAll()   { allRuns.forEach(r => selectedRuns.add(r.name));  renderRunList(); fetchLabels(); }
+function selectNone()  { selectedRuns.clear();                              renderRunList(); fetchLabels(); }
+function selectEmpty() {
+  selectedRuns.clear();
+  allRuns.filter(r => r.is_empty && r.label_count > 0).forEach(r => selectedRuns.add(r.name));
+  renderRunList(); fetchLabels();
+}
+
+// ── Labels ───────────────────────────────────────────────────────────────────
+async function fetchLabels() {
+  document.getElementById('label-grid').innerHTML = '<div class="loading">Loading&hellip;</div>';
+  if (!selectedRuns.size) { allLabels = []; renderLabels(); return; }
+  const qs  = [...selectedRuns].map(r => 'run=' + encodeURIComponent(r)).join('&');
+  allLabels = await fetch('/api/labels?' + qs).then(r => r.json());
+  renderLabels();
+}
+
+function renderLabels() {
+  const grid  = document.getElementById('label-grid');
+  const info  = document.getElementById('toolbar-info');
+  const query = document.getElementById('search').value.toLowerCase();
+  const sort  = document.getElementById('sort-by').value;
+
+  let labels = allLabels;
+  if (query) labels = labels.filter(l =>
+    l.name.toLowerCase().includes(query) || l.description.toLowerCase().includes(query));
+
+  if (sort === 'alpha') labels = [...labels].sort((a,b) => a.name.localeCompare(b.name));
+  else if (sort === 'runs') labels = [...labels].sort((a,b) =>
+    Object.keys(b.runs).length - Object.keys(a.runs).length);
+
+  info.textContent = labels.length + ' label' + (labels.length !== 1 ? 's' : '');
+
+  if (!labels.length) {
+    grid.innerHTML = `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--grey);font-size:.82rem">
+      ${selectedRuns.size ? 'No labels match.' : 'Select at least one run.'}</div>`;
+    return;
+  }
+
+  grid.innerHTML = labels.map(label => {
+    const entries    = Object.entries(label.runs);
+    const totalUses  = entries.reduce((s,[,v]) => s + v.usage_count, 0);
+    const badges     = entries.map(([rn, st]) => {
+      const c = runColor[rn] || '#888';
+      const short = rn.length > 18 ? rn.slice(0,16) + '\u2026' : rn;
+      return `<span class="run-badge" style="background:${c}28;border-color:${c}60;color:${c}" title="${esc(rn)}: ${st.usage_count} uses">
+        ${esc(short)} <strong>${st.usage_count}</strong></span>`;
+    }).join('');
+    const sel = selectedLabel === label.name ? ' selected' : '';
+    // Use data attribute so onclick never breaks on special chars
+    return `<div class="label-card${sel}" data-label="${esc(label.name)}">
+      <div class="label-name">${esc(label.name)}</div>
+      <div class="run-badges">${badges}</div>
+      <div class="label-desc">${esc(label.description)}</div>
+      <div class="label-total">Total uses: ${totalUses}</div>
+    </div>`;
+  }).join('');
+
+  // Event delegation on the grid
+  grid.onclick = e => {
+    const card = e.target.closest('.label-card');
+    if (card) selectLabel(card.dataset.label);
+  };
+}
+
+// ── Detail panel ─────────────────────────────────────────────────────────────
+async function selectLabel(name) {
+  selectedLabel = name;
+  renderLabels();   // update selected highlight
+
+  const panel  = document.getElementById('detail-panel');
+  const scroll = document.getElementById('detail-scroll');
+  panel.classList.add('open');
+
+  const meta = allLabels.find(l => l.name === name);
+  document.getElementById('detail-name').textContent = name;
+  document.getElementById('detail-desc').textContent = meta ? meta.description : '';
+
+  scroll.innerHTML = '<div class="loading">Loading samples&hellip;</div>';
+
+  const qs   = [...selectedRuns].map(r => 'run=' + encodeURIComponent(r)).join('&');
+  const data = await fetch(`/api/label/${encodeURIComponent(name)}/samples?${qs}&limit=6`).then(r => r.json());
+
+  let html = '';
+
+  html += sectionHtml('Creation samples', data.creation_samples);
+  html += sectionHtml('Usage samples',    data.usage_samples);
+
+  scroll.innerHTML = html;
+}
+
+function sectionHtml(title, samples) {
+  let h = `<div class="section-label">${title} (${samples.length})</div>`;
+  if (!samples.length) return h + `<p class="empty-msg">None found.</p>`;
+  return h + samples.map(sampleCardHtml).join('');
+}
+
+function sampleCardHtml(s) {
+  const c      = runColor[s.run] || '#888';
+  const short  = s.run.length > 26 ? s.run.slice(0,24) + '\u2026' : s.run;
+  const stem   = (s.stem || '').replace(/_/g, '_&#8203;');
+  return `
+  <div class="sample-card">
+    <div class="sample-header">
+      <span class="sample-run-tag" style="background:${c}28;color:${c};border-color:${c}55">${esc(short)}</span>
+      <span class="sample-stem">${stem}</span>
+    </div>
+    ${s.user_prompt
+      ? `<div class="sample-prompt">&ldquo;${esc(s.user_prompt)}&rdquo;</div>`
+      : ''}
+    ${s.context_before
+      ? `<div class="sample-context"><span class="context-tag">Context before</span>${esc(s.context_before)}</div>`
+      : ''}
+    <div class="sample-para">${esc(s.paragraph)}</div>
+    ${s.justification
+      ? `<div class="sample-just"><span class="just-tag">Justification: </span>${esc(s.justification)}</div>`
+      : ''}
+  </div>`;
+}
+
+function closeDetail() {
+  selectedLabel = null;
+  document.getElementById('detail-panel').classList.remove('open');
+  renderLabels();
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+init();
+</script>
+</body>
+</html>
