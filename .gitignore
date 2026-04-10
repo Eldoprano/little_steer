@@ -48,9 +48,34 @@ Thumbs.db
 # Local config
 .little_steer_vram_config.json
 
+# Secrets
+.secrets.json
+
+# Generated data (large files)
+data/1_generated/
+data/2a_evolved/
+data/2b_labeled/
+data/3_representations/
+
+# Labeling runs (large state files)
+2_labeling/2a_evolving/runs/
+2_labeling/2b_sentence/data/
+
+# Response generator data
+1_generating/data/
+
 # tmp Generated results
-plots/*
-sweep_results.json
-results.html
-.gitignore
-multilayer_grids.html
+3_representations/plots/
+3_representations/sweep_results.json
+3_representations/results.html
+3_representations/multilayer_grids.html
+
+# Logs
+*_logs/
+*.log
+
+# Caches
+*_cache/
+
+# Local assistant settings
+.claude/
