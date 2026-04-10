@@ -1,0 +1,20 @@
+[project]
+name = "response-generator"
+version = "0.1.0"
+description = "vLLM-based inference pipeline for generating model responses"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=2.20.0",
+    "openai>=1.30.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "thesis-schema",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm"]
+
+[tool.uv.sources]
+thesis-schema = { path = "../data" }
+

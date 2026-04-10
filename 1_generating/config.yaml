@@ -1,0 +1,341 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# generate_responses.py — Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Run:  python generate_responses.py --config config.yaml
+#       python generate_responses.py --config config.yaml --models qwen3-8b
+#       python generate_responses.py --config config.yaml --calibrate-only
+
+output_dir: "data"
+hf_token_file: "../.secrets.json"   # JSON file with {"hf_token": "hf_..."}
+
+
+# ── Default generation parameters ─────────────────────────────────────────────
+# These apply to ALL models unless a model explicitly overrides them.
+defaults:
+  temperature: 0.6
+  top_p: 0.95
+  top_k: null          # null = disabled
+  min_p: null          # null = disabled
+  max_new_tokens: 3000
+  quantization: null   # null = float16 as-is
+                       # "4bit" or "8bit" = bitsandbytes quantization
+                       # "auto" = try float16, fall back to bitsandbytes if OOM
+                       # For pre-quantized HF models (AWQ/GPTQ): keep null,
+                       # just point model_id at the quantized variant.
+  # vLLM-specific settings
+  gpu_memory_utilization: 1.0   # fraction of GPU VRAM to use (0.0–1.0)
+  max_model_len: 8192            # cap context window length to save KV-cache memory
+                                 # e.g. 8192 for 9B models on 16GB VRAM
+  enforce_eager: true            # disable CUDA graphs — slightly slower but saves ~1GB VRAM
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
+models:
+    ###### Normal Models #######
+  # - name: deepseek-r1-distill-llama-8b
+  #   model_id: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+  #   temperature: 1
+  #   quantization: auto
+
+  # - name: phi-4-reasoning-14B
+  #   model_id: unsloth/Phi-4-reasoning-GGUF:Q4_K_M
+  #   tokenizer: microsoft/Phi-4-reasoning
+  #   hf_config_path: microsoft/Phi-4-reasoning
+  #   quantization: none
+  #   temperature: 0.8
+  #   top_p: 0.95
+  
+  - name: phi-4-reasoning-14B
+    backend: openai
+    model_id: phi-4-reasoning      # must match what LMStudio reports
+    openai_base_url: http://localhost:1234/v1 # LMStudio default
+    openai_api_key: lm-studio                # any string works
+    temperature: 0.8
+    top_p: 0.95
+
+  - name: ministral-3-8B-Reasoning-2512
+    model_id: ministral-3-8b-instruct-2512
+    temperature: 1
+    mistral_format: true
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    system_prompt: |
+      # HOW YOU SHOULD THINK AND ANSWER
+      First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
+
+      Your thinking process must follow the template below:
+      [THINK]
+      Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
+      [/THINK]
+      Here, provide a self-contained response.
+
+  - name: ministral-3-8B-Reasoning-2512-self-heretic
+    model_id: ministral-3-8b-reasoning-2512-heretic_gguf
+    tokenizer: mistralai/Ministral-3-8B-Reasoning-2512
+    temperature: 1
+    skip_datasets: [lima]
+    mistral_format: true
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    system_prompt: |
+      # HOW YOU SHOULD THINK AND ANSWER
+      First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
+
+      Your thinking process must follow the template below:
+      [THINK]
+      Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
+      [/THINK]
+      Here, provide a self-contained response.
+
+  # - name: ministral-3-14B-Reasoning-2512
+  #   model_id: mistralai/Ministral-3-14B-Reasoning-2512
+  #   temperature: 1
+  #   mistral_format: true
+  #   backend: openai
+  #   openai_base_url: http://localhost:1234/v1
+  #   openai_api_key: lm-studio
+  #   system_prompt: |
+  #     # HOW YOU SHOULD THINK AND ANSWER
+  #     First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
+
+  #     Your thinking process must follow the template below:
+  #     [THINK]
+  #     Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
+  #     [/THINK]
+  #     Here, provide a self-contained response.
+
+  - name: gpt-oss-20b
+    model_id: gpt-oss-20b
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+
+  - name: gpt-oss-20b-heretic-ara-v3-i1
+    model_id: gpt-oss-20b-heretic-ara-v3-i1
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+
+  - name: gemma-4-26b-a4b
+    model_id: google/gemma-4-26b-a4b
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+    top_p: 0.95
+    top_k: 64
+
+  - name: gemma-4-26b-a4b-heretic
+    model_id: nohurry/gemma-4-26B-A4B-it-heretic-GGUF:Q4_K_M
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+    top_p: 0.95
+    top_k: 64
+    skip_datasets: [lima]
+    
+
+#   - name: qwen3.5-9B
+#     model_id: Qwen/Qwen3.5-9B
+#     quantization: auto
+#     temperature: 1.0
+#     top_p: 0.95
+#     top_k: 20
+#     min_p: 0.0
+#     presence_penalty: 1.5
+#     repetition_penalty: 1.0
+
+#   - name: ministral-3-8B-Reasoning-2512
+#     model_id: mistralai/Ministral-3-8B-Reasoning-2512
+#     temperature: 1
+#     mistral_format: true
+#     system_prompt: |
+#       # HOW YOU SHOULD THINK AND ANSWER
+#       First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
+
+#       Your thinking process must follow the template below:
+#       [THINK]
+#       Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
+#       [/THINK]
+#       Here, provide a self-contained response.
+
+# ####### UNCENSORED ########
+
+#   # - name: deepseek-r1-distill-llama-8b-self-heretic
+#   #   model_id: AISafety-Student/DeepSeek-R1-Distill-Llama-8B-heretic
+#   #   tokenizer: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+#   #   temperature: 1
+#   #   quantization: auto
+#   #   skip_datasets: [lima]
+
+
+  # - name: gpt-oss-20b-heretic-ara-v3
+  #   model_id: p-e-w/gpt-oss-20b-heretic-ara-v3
+  #   tokenizer: openai/gpt-oss-20b
+  #   skip_datasets: [lima]
+  #   temperature: 1
+  #   quantization: auto
+
+  # - name: qwen3.5-9B-heretic-v2
+  #   model_id: trohrbaugh/Qwen3.5-9B-heretic-v2
+  #   tokenizer: Qwen/Qwen3.5-9B
+  #   skip_datasets: [lima]
+  #   quantization: auto
+  #   temperature: 1.0
+  #   top_p: 0.95
+  #   top_k: 20
+  #   min_p: 0.0
+  #   presence_penalty: 1.5
+  #   repetition_penalty: 1.0
+
+  # - name: deepseek-r1-distill-llama-8b-heretic
+  #   model_id: simmessa/DeepSeek-R1-Distill-Llama-8B-heretic
+  #   tokenizer: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+  #   skip_datasets: [lima]
+  #   temperature: 1
+  #   quantization: auto
+
+  # - name: phi-4-reasoning-14B-heretic
+  #   model_id: mradermacher/Phi-4-reasoning-heretic-i1-GGUF:Q4_K_M
+  #   tokenizer: microsoft/Phi-4-reasoning
+  #   hf_config_path: microsoft/Phi-4-reasoning
+  #   skip_datasets: [lima]
+  #   quantization: none
+  #   temperature: 0.8
+  #   top_p: 0.95
+
+  # - name: qwen3.5-9B-heretic-v2
+  #   model_id: trohrbaugh/Qwen3.5-9B-heretic-v2
+  #   tokenizer: Qwen/Qwen3.5-9B
+  #   skip_datasets: [lima]
+  #   quantization: auto
+  #   temperature: 1.0
+  #   top_p: 0.95
+  #   top_k: 20
+  #   min_p: 0.0
+  #   presence_penalty: 1.5
+  #   repetition_penalty: 1.0
+
+  # - name: qwen3.5-27B
+  #   model_id: Qwen/Qwen3.5-27B
+  #   quantization: auto
+  #   temperature: 1.0
+  #   top_p: 0.95
+  #   top_k: 20
+  #   min_p: 0.0
+  #   presence_penalty: 1.5
+  #   repetition_penalty: 1.0
+
+  # - name: qwen3.5-27B-heretic
+  #   model_id: coder3101/Qwen3.5-27B-heretic
+  #   tokenizer: Qwen/Qwen3.5-27B
+  #   skip_datasets: [lima]
+  #   quantization: auto
+  #   temperature: 1.0
+  #   top_p: 0.95
+  #   top_k: 20
+  #   min_p: 0.0
+  #   presence_penalty: 1.5
+  #   repetition_penalty: 1.0
+
+  # ── OpenAI-compatible local servers (LMStudio, Ollama, etc.) ─────────────
+  # These models run on a local server — no GPU memory is used by this script.
+  # Start LMStudio, load the model there, then uncomment the entry below.
+  # The model_id must match the model identifier shown in LMStudio's API tab.
+  #
+
+  # ── larger models (comment in when on a bigger machine) ───────────────────
+  # - name: gpt-oss-120b
+  #   model_id: openai/gpt-oss-120b
+  #   temperature: 1
+
+  # - name: qwen3-32b
+  #   model_id: Qwen/Qwen3-32B
+  #   quantization: "4bit"   # needs 4-bit on 16GB VRAM
+  #   top_k: 20
+  #   min_p: 0.0
+
+  # - name: r1-32b
+  #   model_id: deepseek-ai/DeepSeek-R1-Distill-Qwen-32B
+  #   quantization: "4bit"
+
+
+# ── Datasets ──────────────────────────────────────────────────────────────────
+datasets:
+  # - name: harmful
+  #   source: hf
+  #   path: declare-lab/CategoricalHarmfulQA
+  #   subset: default
+  #   split: en
+  #   prompt_field: Question
+  #   extra_fields: "*"
+
+  # - name: harmbench
+  #   source: hf
+  #   path: walledai/HarmBench
+  #   subset: standard
+  #   split: train
+  #   prompt_field: behavior
+  #   extra_fields: "*"    # or e.g. [Category, SemanticCategory]
+
+  - name: strong_reject
+    source: hf
+    path: walledai/StrongREJECT
+    split: train
+    prompt_field: prompt
+    extra_fields: "*"    # save all other fields (category, source, etc.)
+
+  - name: clear_harm
+    source: hf
+    path: AlignmentResearch/ClearHarm
+    subset: default
+    split: train
+    prompt_field: content
+    extra_fields: "*"
+
+  - name: xs_test
+    source: hf
+    path: Paul/XSTest
+    split: train
+    prompt_field: prompt
+    extra_fields: "*"
+
+  - name: lima
+    source: hf
+    path: llamafactory/lima
+    split: train
+    prompt_field: conversations
+    prompt_index: 0          # Grab the first element of the list as the prompt
+    extra_fields: "*"
+
+  # ── local dataset example ─────────────────────────────────────────────────
+  # - name: my_prompts
+  #   source: local
+  #   path: ../data/my_prompts.jsonl   # JSONL: {"prompt": "..."}
+  #   prompt_field: prompt
+  #
+  # - name: my_csv_prompts
+  #   source: local
+  #   path: ../data/prompts.csv        # CSV with header row
+  #   prompt_field: text
+
+
+# ── Generation settings ───────────────────────────────────────────────────────
+generation:
+  # How many prompts to process before writing results to disk.
+  # vLLM handles its own internal batching — this only controls checkpoint
+  # frequency for crash recovery. Larger = more efficient but less resumable.
+  write_chunk_size: 20
+
+  # Retries for responses where <think> never closes (incomplete reasoning).
+  max_retries: 1
+
+  # "sequential" — finish dataset1 fully, then dataset2, etc.
+  # "interleaved" — round-robin one chunk per dataset per cycle.
+  #                 Useful when testing across datasets simultaneously.
+  run_mode: interleaved
