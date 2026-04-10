@@ -3,7 +3,7 @@ Tests for little_steer.data.schema — AnnotatedSpan and ConversationEntry.
 """
 
 import pytest
-from little_steer.data.schema import AnnotatedSpan, ConversationEntry
+from thesis_schema import AnnotatedSpan, ConversationEntry
 
 
 # ── AnnotatedSpan ────────────────────────────────────────────────────────────

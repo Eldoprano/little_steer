@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from ..probing import TokenSimilarities
     from ..models.model import LittleSteerModel
     from ..vectors.steering_vector import SteeringVector
-    from ..data.schema import ConversationEntry
+    from thesis_schema import ConversationEntry
 
 
 # ---------------------------------------------------------------------------

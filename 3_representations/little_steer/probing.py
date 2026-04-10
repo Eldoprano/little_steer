@@ -43,7 +43,7 @@ from .data.tokenizer_utils import TokenPositionMapper, TokenSpan
 if TYPE_CHECKING:
     from .models.model import LittleSteerModel
     from .vectors.steering_vector import SteeringVector, SteeringVectorSet
-    from .data.schema import ConversationEntry
+    from thesis_schema import ConversationEntry
 
 
 # ---------------------------------------------------------------------------

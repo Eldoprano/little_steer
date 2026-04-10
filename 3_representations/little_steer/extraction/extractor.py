@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 import torch
 from tqdm.auto import tqdm
 
-from ..data.schema import ConversationEntry
+from thesis_schema import ConversationEntry
 from ..data.tokenizer_utils import TokenPositionMapper
 from .config import ExtractionPlan
 from .pooling import apply_aggregation

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from transformers import PreTrainedTokenizerBase
 
-from .schema import AnnotatedSpan, ConversationEntry
+from thesis_schema import AnnotatedSpan, ConversationEntry
 
 
 @dataclass

@@ -46,7 +46,7 @@ from typing import Iterator
 
 from tqdm.auto import tqdm
 
-from .schema import AnnotatedSpan, ConversationEntry
+from thesis_schema import AnnotatedSpan, ConversationEntry
 
 
 def convert_file(
