@@ -1,5 +1,7 @@
 # little_steer — Thesis Code
 
+> ⚠️ Code in active development!!! (Its my Master Thesis after all...) Things will change. Still not sure why I have this public xD
+
 Research code for the master's thesis *"Monitoring What Models Think: Steering Vectors for AI Safety and Control"* (Hochschule Kempten, 2026).
 
 The core idea: use Representation Engineering (RepE) to extract steering vectors from reasoning model activations to detect and steer safety-relevant behaviours — not from text output, but from internal activations.
