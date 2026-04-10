@@ -142,7 +142,7 @@ def cli(
 
     console.print(
         f"[bold]sentence-labeler[/bold] — "
-        f"judge: [cyan]{cfg.judge.name}[/cyan] ({cfg.judge.backend}) — "
+        f"judge: [cyan]{cfg.judges[0].name}[/cyan] ({cfg.judges[0].backend}) — "
         f"{len(input_files)} file(s)"
     )
 

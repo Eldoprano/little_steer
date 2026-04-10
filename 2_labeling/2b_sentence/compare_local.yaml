@@ -1,0 +1,89 @@
+# compare_local.yaml — Multi-judge comparison using local LMStudio models.
+#
+# Replaces compare_labelers.py; judges are defined here, not in code.
+#
+# Prerequisites:
+#   - LMStudio running on localhost:1234
+#   - Add "lm-studio-key": "lm-studio" to ../../.secrets.json
+#     (LMStudio ignores the key value but the client needs a non-empty string)
+#
+# Usage:
+#   # Full labeling pipeline (each judge to its own sub-directory):
+#   uv run run.py --config compare_local.yaml ../../data/1_generated/
+#
+#   # Comparison mode (samples N entries, writes merged labels_by_judge JSON):
+#   uv run run.py --config compare_local.yaml --compare-output ../../data/1_generated/
+#
+# LMStudio requires manually swapping the loaded model between judges.
+# Set lmstudio_prompt: true on each judge and run.py will pause and ask you
+# to load/swap the model before it starts that judge.
+
+judges:
+  - name: gpt-oss-20b
+    model_id: gpt-oss-20b          # must match the model name LMStudio reports
+    backend: custom
+    base_url: http://localhost:1234/v1
+    api_key_source: lm-studio-key
+    temperature: 0.4
+    max_tokens: 20000
+    timeout: 300
+    lmstudio_prompt: true           # pause so you can load this model in LMStudio
+
+  - name: google/gemma-4-26b-a4b
+    model_id: google/gemma-4-26b-a4b
+    backend: custom
+    base_url: http://localhost:1234/v1
+    api_key_source: lm-studio-key
+    temperature: 0.4
+    max_tokens: 20000
+    timeout: 300
+    lmstudio_prompt: true
+
+  - name: qwen3.5-27b-uncensored-hauhaucs-aggressive
+    model_id: qwen3.5-27b-uncensored-hauhaucs-aggressive
+    backend: custom
+    base_url: http://localhost:1234/v1
+    api_key_source: lm-studio-key
+    temperature: 0.4
+    max_tokens: 20000
+    timeout: 300
+    lmstudio_prompt: true
+
+  # Mix in an API model for reference — no LMStudio pause needed
+  - name: gpt-5.4-mini
+    model_id: gpt-5.4-mini-2026-03-17
+    backend: openai
+    base_url: null
+    api_key_source: openai-api-key
+    temperature: 1.0
+    max_completion_tokens: 8192
+    timeout: 120
+    lmstudio_prompt: false
+
+secrets_file: "../../.secrets.json"
+prompt_file: "prompt.md"
+
+seed: 42
+sample_per_file: 1
+
+pipeline:
+  max_retries: 3
+  retry_delay: 3.0
+  checkpoint_every: 5            # checkpoint more often for local runs (easier to recover)
+  max_workers: 1                 # local single-GPU: serialize requests
+  response_sentences: 5
+  skip_no_reasoning: true
+  skip_no_response: false
+  overwrite_existing: false
+  max_reasoning_chars: 8000      # crop long reasonings to keep prompt within context window
+
+mapper:
+  fuzzy_threshold: 0.9           # slightly more lenient for smaller local models
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+output:
+  dir: "data/labeled"
+  suffix: ""
+  in_place: false
+  comparison_json: false         # set to true (or use --compare-output) for merged JSON

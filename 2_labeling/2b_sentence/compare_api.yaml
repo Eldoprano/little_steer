@@ -1,0 +1,115 @@
+# compare_api.yaml — Multi-judge comparison using cloud API models.
+#
+# Replaces compare_api_labelers.py; judges are defined here, not in code.
+#
+# Usage:
+#   # Run all judges through the full labeling pipeline:
+#   uv run run.py --config compare_api.yaml ../../data/1_generated/
+#
+#   # Comparison mode: sample entries and write a merged labels_by_judge JSON:
+#   uv run run.py --config compare_api.yaml --compare-output ../../data/1_generated/
+#
+#   # Override sampling parameters at the command line:
+#   uv run run.py --config compare_api.yaml --compare-output --seed 42 --sample 2 ../../data/1_generated/
+#
+#   # Run only specific judges:
+#   uv run run.py --config compare_api.yaml --judge gpt-5-mini --judge gemini-3-flash-preview ../../data/1_generated/
+
+judges:
+  - name: gpt-5-mini
+    model_id: gpt-5-mini-2025-08-07
+    backend: openai
+    base_url: null
+    api_key_source: openai-api-key
+    temperature: 1.0
+    max_completion_tokens: 8192
+    timeout: 120
+
+  - name: gpt-5.4-mini
+    model_id: gpt-5.4-mini-2026-03-17
+    backend: openai
+    base_url: null
+    api_key_source: openai-api-key
+    temperature: 1.0
+    max_completion_tokens: 8192
+    timeout: 120
+
+  - name: gpt-5.4-nano
+    model_id: gpt-5.4-nano-2026-03-17
+    backend: openai
+    base_url: null
+    api_key_source: openai-api-key
+    temperature: 1.0
+    max_completion_tokens: 8192
+    timeout: 120
+
+  - name: gpt-5
+    model_id: gpt-5-2025-08-07
+    backend: openai
+    base_url: null
+    api_key_source: openai-api-key
+    temperature: 1.0
+    max_completion_tokens: 8192
+    timeout: 120
+
+  - name: gemini-3-flash-preview
+    model_id: gemini-3-flash-preview
+    backend: gemini
+    base_url: null
+    api_key_source: gemini-api-key
+    temperature: 0.4
+    max_tokens: 8192
+    timeout: 300
+    service_tier: flex
+    reasoning_effort: low
+
+  - name: gemini-3.1-flash-lite-preview
+    model_id: gemini-3.1-flash-lite-preview
+    backend: gemini
+    base_url: null
+    api_key_source: gemini-api-key
+    temperature: 0.4
+    max_tokens: 8192
+    timeout: 300
+    service_tier: flex
+    reasoning_effort: low
+
+  - name: gemini-3.1-pro-preview
+    model_id: gemini-3.1-pro-preview
+    backend: gemini
+    base_url: null
+    api_key_source: gemini-api-key
+    temperature: 0.4
+    max_tokens: 8192
+    timeout: 300
+    service_tier: flex
+    reasoning_effort: low
+
+secrets_file: "../../.secrets.json"
+prompt_file: "prompt.md"
+
+# Comparison mode: sample 1 entry per input file by default.
+seed: 12345
+sample_per_file: 1
+
+pipeline:
+  max_retries: 3
+  retry_delay: 3.0
+  checkpoint_every: 10
+  max_workers: 4
+  response_sentences: 3
+  skip_no_reasoning: true
+  skip_no_response: false
+  overwrite_existing: false
+  max_reasoning_chars: 6000    # crop long reasonings to keep prompts manageable
+
+mapper:
+  fuzzy_threshold: 0.85
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+output:
+  dir: "data/labeled"
+  suffix: ""
+  in_place: false
+  comparison_json: false       # set to true (or use --compare-output) for merged JSON

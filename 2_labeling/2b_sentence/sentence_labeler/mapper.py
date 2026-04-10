@@ -10,7 +10,7 @@ Design:
 - Three-tier fallback per sentence:
     1. Exact substring match
     2. Normalized match (strip whitespace from both)
-    3. Fuzzy sliding-window match (SequenceMatcher ratio >= threshold)
+    3. Fuzzy sliding-window match (rapidfuzz partial_ratio >= threshold)
 - Sentences that fail all tiers are skipped (logged as warnings); the cursor
   does not advance, so subsequent sentences are still searched from the same
   position.
@@ -18,7 +18,7 @@ Design:
 
 from __future__ import annotations
 
-from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -53,37 +53,45 @@ def _find_fuzzy(
 ) -> tuple[int, int] | None:
     """Sliding-window fuzzy match within haystack[start:end].
 
-    Window width varies from 70% to 130% of len(text). Returns the window
-    with the highest SequenceMatcher ratio if >= threshold, else None.
+    Uses rapidfuzz's C++-backed partial_ratio_alignment which performs an
+    optimized sliding-window search internally.  The threshold (0.0–1.0) is
+    converted to rapidfuzz's 0–100 scale.
     """
-    text_len = len(text)
-    if text_len == 0:
+    if len(text) == 0:
         return None
 
     region = haystack[start:end]
-    if len(region) < text_len // 2:
+    if len(region) < len(text) // 2:
         return None
 
-    min_w = max(1, int(0.7 * text_len))
-    max_w = int(1.3 * text_len)
+    # rapidfuzz uses 0–100 scale; our threshold is 0.0–1.0
+    alignment = fuzz.partial_ratio_alignment(
+        text, region, score_cutoff=threshold * 100,
+    )
+    if alignment is None:
+        return None
 
-    best_ratio = 0.0
-    best_pos: tuple[int, int] | None = None
+    # alignment.dest_start / .dest_end are offsets within `region`;
+    # translate back to `haystack` coordinates.
+    return (start + alignment.dest_start, start + alignment.dest_end)
 
-    for w in range(min_w, max_w + 1):
-        if w > len(region):
-            break
-        for i in range(len(region) - w + 1):
-            window = region[i : i + w]
-            ratio = SequenceMatcher(None, text, window, autojunk=False).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_pos = (start + i, start + i + w)
+def _snap_to_sentence_end(haystack: str, start: int, end: int) -> int:
+    """Return the position just after the last sentence boundary in haystack[start:end].
 
-    if best_ratio >= threshold and best_pos is not None:
-        return best_pos
-    return None
-
+    Includes any closing quotes/brackets immediately following the terminal
+    punctuation (e.g. ." or !' are consumed too).
+    Falls back to `end` unchanged if no sentence boundary is found.
+    """
+    _TRAIL_CHARS = frozenset({')', '}', ']'})
+    region = haystack[start:end]
+    best = max(region.rfind(p) for p in '.!?')
+    if best == -1:
+        return end
+    # Advance past any closing quote/bracket chars that follow the punctuation
+    pos = best + 1
+    while pos < len(region) and region[pos] in _TRAIL_CHARS:
+        pos += 1
+    return start + pos
 
 def _lookahead(sentence_len: int, multiplier: int, minimum: int) -> int:
     return max(minimum, multiplier * sentence_len)
@@ -123,6 +131,9 @@ def map_sentences_to_spans(
             cfg.max_lookahead_min,
         )
         search_end = min(total, search_from + lookahead)
+        # Snap the region end to the last sentence boundary so we don't
+        # force the matcher to consider partial-sentence windows.
+        search_end = _snap_to_sentence_end(reasoning_text, search_from, search_end) + 2
 
         result: tuple[int, int] | None = None
 

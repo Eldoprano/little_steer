@@ -352,7 +352,19 @@ def run_pipeline(
     console: Console,
     reset_checkpoints: bool = False,
     dry_run: bool = False,
+    judge_cfg: JudgeConfig | None = None,
+    output_dir_override: Path | None = None,
 ) -> None:
+    """Run the labeling pipeline for a single judge.
+
+    Args:
+        judge_cfg: If provided, use this judge instead of the first entry in
+            config.judges. Allows the multi-judge runner to call this function
+            once per judge without duplicating config loading.
+        output_dir_override: If provided, use this as the output directory
+            instead of the one derived from config. Used by the multi-judge
+            runner to give each judge its own sub-directory.
+    """
     if not input_files:
         console.print("[yellow]No input files to process.[/yellow]")
         return
@@ -360,7 +372,9 @@ def run_pipeline(
     # Resolve config-relative paths
     secrets_path = config.resolve_path(config_path, config.secrets_file)
     prompt_path = config.resolve_path(config_path, config.prompt_file)
-    output_dir = config.resolve_path(config_path, config.output.dir)
+    output_dir = output_dir_override or config.resolve_path(config_path, config.output.dir)
+
+    effective_judge = judge_cfg or config.judges[0]
 
     # Dry run
     if dry_run:
@@ -379,7 +393,7 @@ def run_pipeline(
         console.print(f"[red]Error: {e}[/red]")
         raise SystemExit(1)
 
-    client = build_client(config.judge, secrets)
+    client = build_client(effective_judge, secrets)
 
     # Load prompt template
     prompt_template = prompt_path.read_text(encoding="utf-8")
@@ -408,7 +422,7 @@ def run_pipeline(
                 input_path=input_path,
                 output_path=out_path,
                 client=client,
-                judge_cfg=config.judge,
+                judge_cfg=effective_judge,
                 prompt_template=prompt_template,
                 pipeline_cfg=config.pipeline,
                 mapper_cfg=config.mapper,

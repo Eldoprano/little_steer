@@ -196,6 +196,9 @@ class JudgeConfig(BaseModel):
     timeout: int = 120
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     service_tier: Literal["auto", "default", "flex"] | None = None
+    # When True, run.py will pause before this judge and ask the user to
+    # load the model in LMStudio before continuing.
+    lmstudio_prompt: bool = False
 
 
 class PipelineConfig(BaseModel):
@@ -223,15 +226,37 @@ class OutputConfig(BaseModel):
 
 
 class LabelerConfig(BaseModel):
-    judge: JudgeConfig
+    """Top-level labeler configuration.
+
+    Supports both the old singular ``judge:`` key and the new ``judges:`` list.
+    A model_validator normalises the old form into ``judges`` so the rest of the
+    code only needs to deal with the list.
+    """
+
+    # New preferred form — one or more judges.
+    judges: list[JudgeConfig] = Field(default_factory=list)
+    # Old singular form kept for backward-compatibility; always normalised away.
+    judge: JudgeConfig | None = Field(default=None, exclude=True)
+
     secrets_file: str = "../../.secrets.json"
     prompt_file: str = "prompt.md"
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     mapper: MapperConfig = Field(default_factory=MapperConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
 
+    @model_validator(mode="after")
+    def _normalise_judges(self) -> "LabelerConfig":
+        """Merge singular judge into the list, ensuring judges is never empty."""
+        if self.judge is not None and self.judge not in self.judges:
+            self.judges = [self.judge] + list(self.judges)
+        if not self.judges:
+            raise ValueError(
+                "Config must define at least one judge via 'judge:' or 'judges:' key."
+            )
+        return self
+
     @classmethod
-    def from_yaml(cls, path: Path) -> LabelerConfig:
+    def from_yaml(cls, path: Path) -> "LabelerConfig":
         with open(path) as f:
             data = yaml.safe_load(f)
         return cls.model_validate(data)
