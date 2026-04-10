@@ -1,5 +1,5 @@
 """
-LLM labeler: prompt construction, LiteLLM calls, response parsing.
+LLM labeler: prompt construction, OpenAI API calls, response parsing.
 """
 from __future__ import annotations
 

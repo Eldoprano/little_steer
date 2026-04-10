@@ -3,7 +3,7 @@ name = "label-evolution"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "litellm>=1.40.0",
+    "openai>=1.0.0",
     "click>=8.1",
     "pydantic>=2.0",
     "rich>=13.0",

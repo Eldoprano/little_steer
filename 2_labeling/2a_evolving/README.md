@@ -55,7 +55,7 @@ uv run python run.py run \
 
 Options:
 - `--models` — one or more substrings matched against JSONL filenames (case-insensitive). `deepseek` matches all 10 deepseek files including heretic variants.
-- `--labeler` — LiteLLM model string: `anthropic/...`, `openai/...`, `ollama/...`
+- `--labeler` — OpenAI-compatible model string (e.g. `gpt-4o-mini`, `anthropic/claude-...` if using a proxy, etc.)
 - `--steps` — steps to run (if resuming, adds on top of existing steps)
 - `--max-labels` — cap on active labels; CREATE is blocked when reached
 - `--seed path/to/seed.json` — optional initial taxonomy (see seed format below)
@@ -194,7 +194,7 @@ Any JSON file in the seed format above can be passed as `--seed`.
 
 **Single state file per run:** Simple, atomic, easy to inspect. No database needed for this scale.
 
-**LiteLLM:** Unified interface across providers — swap between Anthropic, OpenAI, and local Ollama models by changing only the `--labeler` string.
+**OpenAI-Compatible Client:** Uses the official OpenAI Python client, supporting any OpenAI-compatible backend (Anthropic via proxy, LMStudio, Ollama, etc.) by setting `OPENAI_BASE_URL`.
 
 **NONE-first prompt design:** The labeler prompt was designed around the insight that small models will propose changes at every step if not constrained. The prompt lists explicit conditions for when a change is allowed, and states that NONE is "always the default." This is the most important correctness property of the system.
 

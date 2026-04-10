@@ -10,7 +10,6 @@ labeling and activation extraction.
 |------|---------|
 | `generate_responses.py` | Main script — importable and CLI |
 | `config.yaml` | Edit this to configure your run |
-| `batch_calibration.json` | Auto-generated, gitignored — caches the best batch size per model per machine |
 
 ## Quick start
 
@@ -38,7 +37,6 @@ gen = ResponseGenerator.from_config("config.yaml")
 gen.run()                            # all models & datasets
 gen.run(models=["qwen3-8b"])         # one model
 gen.run(datasets=["harmful"])        # one dataset
-gen.calibrate()                      # calibrate only
 ```
 
 ## Configuration
@@ -115,8 +113,7 @@ datasets:
 
 ```yaml
 generation:
-  batch_size: auto   # "auto" uses calibration cache; or set a fixed int
-  calibrate_on_start: true
+  write_chunk_size: 20
   max_retries: 3
   run_mode: sequential   # "sequential" or "interleaved"
 ```
@@ -177,13 +174,3 @@ The script checks which `id`s are already present in the output file before gene
 - You can stop and restart at any time.
 - Multiple machines can write to separate output files and the files can be merged later by concatenating the JSONL lines (dedup by `id` if needed).
 
-## Batch size calibration
-
-On the first run for a new model (when `batch_size: auto`), the script probes increasing batch sizes `[1, 2, 4, 8, 16, 32]` with short dummy generations until it hits OOM. The result is saved to `batch_calibration.json` keyed by `hostname/model_id/quantization`, so subsequent runs on the same machine skip calibration entirely.
-
-To re-calibrate (e.g. after freeing VRAM or changing hardware):
-
-```bash
-rm batch_calibration.json
-python generate_responses.py --config config.yaml --calibrate-only
-```
