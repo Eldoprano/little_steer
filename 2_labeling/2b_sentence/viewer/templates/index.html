@@ -23,6 +23,13 @@
     {% endfor %}
   </select>
 
+  <select id="f-judge" onchange="applyFilters()">
+    <option value="">All labelers</option>
+    {% for j in filters.judges %}
+    <option value="{{ j }}">{{ j }}</option>
+    {% endfor %}
+  </select>
+
   <select id="f-trajectory" onchange="applyFilters()">
     <option value="">All trajectories</option>
     {% for t in filters.trajectories %}
@@ -51,12 +58,12 @@
 const ALL = {{ summaries_json | safe }};
 
 const TRAJECTORY_COLORS = {
-  safe_throughout:       "#dcfce7",
-  concern_then_refuse:   "#fef9c3",
-  concern_then_comply:   "#fee2e2",
-  comply_no_deliberation:"#ffedd5",
-  gradual_escalation:    "#fee2e2",
-  mixed_inconclusive:    "#f3f4f6",
+  safe_throughout:        "#dcfce7",
+  concern_then_refuse:    "#fef9c3",
+  concern_then_comply:    "#fee2e2",
+  comply_no_deliberation: "#ffedd5",
+  gradual_escalation:     "#fee2e2",
+  mixed_inconclusive:     "#f3f4f6",
 };
 
 function trajectoryLabel(t) {
@@ -74,11 +81,13 @@ function renderCard(e) {
   const tcolor = TRAJECTORY_COLORS[e.trajectory] || "#f3f4f6";
   const sc = scoreColor(e.avg_score);
   const sign = e.avg_score >= 0 ? "+" : "";
+  const judgeShort = shortModel(e.judge || "");
   return `
 <a class="card" href="/entry/${e.id}">
   <div class="card-badges">
-    <span class="badge badge-model" title="${e.model}">${shortModel(e.model)}</span>
-    <span class="badge badge-dataset">${e.source_file}</span>
+    <span class="badge badge-model" title="${escHtml(e.model)}">${shortModel(e.model)}</span>
+    <span class="badge badge-dataset">${escHtml(e.source_file)}</span>
+    ${judgeShort ? `<span class="badge badge-judge" title="${escHtml(e.judge)}">labeler: ${judgeShort}</span>` : ""}
   </div>
   <div class="card-trajectory" style="background:${tcolor}">
     ${trajectoryLabel(e.trajectory)}
@@ -93,8 +102,7 @@ function renderCard(e) {
 }
 
 function shortModel(m) {
-  // Keep last path segment, truncate to 24 chars
-  const parts = m.split("/");
+  const parts = (m || "").split("/");
   const s = parts[parts.length - 1];
   return s.length > 24 ? s.slice(0, 22) + "…" : s;
 }
@@ -106,6 +114,7 @@ function escHtml(s) {
 function applyFilters() {
   const ds   = document.getElementById("f-dataset").value;
   const mod  = document.getElementById("f-model").value;
+  const jdg  = document.getElementById("f-judge").value;
   const traj = document.getElementById("f-trajectory").value;
   const aln  = document.getElementById("f-alignment").value;
   const q    = document.getElementById("f-search").value.toLowerCase();
@@ -113,6 +122,7 @@ function applyFilters() {
   const filtered = ALL.filter(e => {
     if (ds   && e.source_file !== ds)     return false;
     if (mod  && e.model !== mod)          return false;
+    if (jdg  && e.judge !== jdg)          return false;
     if (traj && e.trajectory !== traj)    return false;
     if (aln  && e.alignment !== aln)      return false;
     if (q    && !e.user_prompt.toLowerCase().includes(q)) return false;
@@ -126,7 +136,7 @@ function applyFilters() {
 }
 
 function clearFilters() {
-  ["f-dataset","f-model","f-trajectory","f-alignment"].forEach(id =>
+  ["f-dataset","f-model","f-judge","f-trajectory","f-alignment"].forEach(id =>
     document.getElementById(id).value = "");
   document.getElementById("f-search").value = "";
   applyFilters();
