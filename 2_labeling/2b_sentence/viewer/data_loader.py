@@ -136,6 +136,7 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
     datasets: set[str] = set()
     trajectories: set[str] = set()
     alignments: set[str] = set()
+    judges: set[str] = set()
 
     for e in entries:
         if e.get("model"):
@@ -147,12 +148,15 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
             trajectories.add(assessment["trajectory"])
         if assessment.get("alignment"):
             alignments.add(assessment["alignment"])
+        if e.get("judge"):
+            judges.add(e["judge"])
 
     return {
         "models": sorted(models),
         "datasets": sorted(datasets),
         "trajectories": sorted(trajectories),
         "alignments": sorted(alignments),
+        "judges": sorted(judges),
     }
 
 
@@ -196,8 +200,8 @@ def render_reasoning_html(reasoning_text: str, annotations: list[dict]) -> str:
     """Render reasoning text as HTML with colored annotation spans.
 
     Annotations are sorted and de-overlapped. Each span gets a colored
-    background based on its primary label's group. A tooltip shows all labels
-    and the safety score.
+    background based on its primary label's group. Data attributes store all
+    info needed for client-side color-mode toggling and behavior filtering.
     """
     if not reasoning_text:
         return ""
@@ -220,6 +224,10 @@ def render_reasoning_html(reasoning_text: str, annotations: list[dict]) -> str:
             non_overlapping.append(ann)
             cursor = ann["char_end"]
 
+    def _escape_plain(text: str) -> str:
+        """Escape plain text and convert newlines to <br>."""
+        return escape(text).replace("\n", "<br>\n")
+
     # Build HTML segments
     parts: list[str] = []
     pos = 0
@@ -227,36 +235,41 @@ def render_reasoning_html(reasoning_text: str, annotations: list[dict]) -> str:
         start, end = ann["char_start"], ann["char_end"]
         # Plain text before this annotation
         if pos < start:
-            parts.append(escape(reasoning_text[pos:start]))
+            parts.append(_escape_plain(reasoning_text[pos:start]))
 
         labels = ann.get("labels") or ["VII_NEUTRAL_FILLER"]
         primary = labels[0]
         gid = label_group(primary)
         gc = group_color(gid)
         score = ann.get("score", 0)
-        labels_str = ", ".join(labels)
-        tooltip = f"Labels: {labels_str} | Score: {score:+.0f}"
+
+        # All group IDs referenced by labels in this span (comma-sep, no quotes)
+        all_gids = ",".join(dict.fromkeys(label_group(l) for l in labels))
+        # Labels as comma-sep string (label names are safe ASCII)
+        labels_csv = ",".join(labels)
 
         style = (
             f"background:{gc['color']};"
             f"border:1px solid {gc['border']};"
             f"color:{gc['text']};"
             f"border-radius:3px;"
-            f"padding:1px 2px;"
+            f"padding:1px 3px;"
             f"cursor:default;"
         )
-        span_text = escape(reasoning_text[start:end])
+        span_text = _escape_plain(reasoning_text[start:end])
         parts.append(
-            f'<span class="ann-span" data-group="{gid}" '
-            f'style="{style}" title="{escape(tooltip)}">'
+            f'<span class="ann-span"'
+            f' data-group="{gid}"'
+            f' data-groups="{all_gids}"'
+            f' data-labels="{labels_csv}"'
+            f' data-score="{score}"'
+            f' style="{style}">'
             f'{span_text}</span>'
         )
         pos = end
 
     # Remaining plain text
     if pos < len(reasoning_text):
-        parts.append(escape(reasoning_text[pos:]))
+        parts.append(_escape_plain(reasoning_text[pos:]))
 
-    # Convert newlines to <br> for display
-    html = "".join(parts).replace("\n", "<br>\n")
-    return html
+    return "".join(parts)

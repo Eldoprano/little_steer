@@ -80,12 +80,19 @@ def entry_detail(entry_id: str):
     metadata = entry.get("metadata") or {}
     assessment = metadata.get("assessment") or {}
 
-    # Which groups are actually used in this entry?
+    # Which groups are actually used in this entry, and how many sentences each
     used_groups: set[str] = set()
+    group_counts: dict[str, int] = {}
     from viewer.data_loader import label_group
     for ann in reasoning_annotations:
         for lbl in (ann.get("labels") or []):
-            used_groups.add(label_group(lbl))
+            gid = label_group(lbl)
+            used_groups.add(gid)
+            group_counts[gid] = group_counts.get(gid, 0) + 1
+
+    # Average safety score across annotated sentences
+    scores = [a.get("score", 0) for a in reasoning_annotations if a.get("score") is not None]
+    avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
 
     return render_template(
         "entry.html",
@@ -97,6 +104,8 @@ def entry_detail(entry_id: str):
         metadata=metadata,
         annotations=reasoning_annotations,
         used_groups=sorted(used_groups),
+        group_counts=group_counts,
+        avg_score=avg_score,
         label_groups=LABEL_GROUPS,
     )
 
