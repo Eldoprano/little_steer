@@ -198,6 +198,18 @@ def run_multi_judge(
     is_flag=True, default=False,
     help="Delete existing checkpoints and re-label all entries.",
 )
+@click.option(
+    "--token-budget",
+    default=None, type=int,
+    help="Override daily token limit from config (e.g. 2500000). "
+         "Run stops when the limit is reached; resume tomorrow to continue.",
+)
+@click.option(
+    "--max-entries",
+    default=None, type=int,
+    help="Stop after labeling this many entries per judge (across all files). "
+         "Useful for test runs (e.g. --max-entries 1).",
+)
 def main(
     files: tuple[str, ...],
     config: str | None,
@@ -208,6 +220,8 @@ def main(
     retries: int | None,
     dry_run: bool,
     reset_checkpoints: bool,
+    token_budget: int | None,
+    max_entries: int | None,
 ) -> None:
     """Label reasoning sentences in JSONL files using one or more LLM judges.
 
@@ -245,6 +259,10 @@ def main(
         cfg.pipeline.max_workers = workers
     if retries is not None:
         cfg.pipeline.max_retries = retries
+    if token_budget is not None:
+        cfg.pipeline.token_budget = token_budget
+    if max_entries is not None:
+        cfg.pipeline.max_entries = max_entries
 
     # Filter judges
     if judge_filter:

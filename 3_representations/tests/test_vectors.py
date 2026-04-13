@@ -226,3 +226,56 @@ def test_vector_set_summary_contains_key_info():
     assert "pca" in summary
     assert "mean_centering" in summary
     assert "last_token" in summary
+
+
+# ── vector_similarity_matrix ────────────────────────────────────────────────
+
+def test_vector_similarity_matrix_shape():
+    """Similarity matrix should be (n, n) and have 1.0 on diagonal."""
+    from little_steer.probing import vector_similarity_matrix
+    vset = make_vector_set()
+    sim_mat, labels = vector_similarity_matrix(vset)
+    n = len(vset)
+    assert sim_mat.shape == (n, n)
+    assert len(labels) == n
+    # Diagonal should be ~1.0 (self-similarity)
+    for i in range(n):
+        assert abs(sim_mat[i, i] - 1.0) < 1e-5
+
+
+def test_vector_similarity_matrix_symmetric():
+    from little_steer.probing import vector_similarity_matrix
+    vset = make_vector_set()
+    sim_mat, _ = vector_similarity_matrix(vset)
+    assert np.allclose(sim_mat, sim_mat.T, atol=1e-5)
+
+
+def test_vector_similarity_matrix_empty():
+    from little_steer.probing import vector_similarity_matrix
+    vset = SteeringVectorSet()
+    sim_mat, labels = vector_similarity_matrix(vset)
+    assert sim_mat.shape == (0, 0)
+    assert labels == []
+
+
+# ── LinearProbe balanced class weights ──────────────────────────────────────
+
+def test_linear_probe_imbalanced_data():
+    """LinearProbe should handle imbalanced data without crashing."""
+    dim = 64
+    target = [torch.randn(dim) + 3.0 for _ in range(5)]   # few samples
+    baseline = [torch.randn(dim) - 3.0 for _ in range(50)]  # many samples
+    vec = LinearProbe.compute(target, baseline)
+    assert vec.shape == (dim,)
+    # Direction should still be sensible
+    assert not torch.isnan(vec).any()
+
+
+def test_linear_probe_with_score_imbalanced():
+    """compute_with_score should handle imbalanced data (cv folds clamped)."""
+    dim = 64
+    target = [torch.randn(dim) + 5.0 for _ in range(4)]
+    baseline = [torch.randn(dim) - 5.0 for _ in range(40)]
+    vec, accuracy = LinearProbe.compute_with_score(target, baseline)
+    assert vec.shape == (dim,)
+    assert 0.0 <= accuracy <= 1.0

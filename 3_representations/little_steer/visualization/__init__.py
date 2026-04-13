@@ -21,6 +21,7 @@ from .layer_plots import (
     plot_layer_discrimination,
     plot_layer_metrics,
     plot_confusion_matrix,
+    plot_vector_similarity,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "plot_layer_discrimination",
     "plot_layer_metrics",
     "plot_confusion_matrix",
+    "plot_vector_similarity",
 ]

@@ -13,10 +13,10 @@
     <span class="badge badge-dataset">{{ entry.source_file }}</span>
     {% if assessment.trajectory %}
     <span class="traj-badge" style="background:{{ {
-      'safe_throughout': '#dcfce7', 'concern_then_refuse': '#fef9c3',
-      'concern_then_comply': '#fee2e2', 'comply_no_deliberation': '#ffedd5',
-      'gradual_escalation': '#fee2e2', 'mixed_inconclusive': '#f3f4f6'
-    }.get(assessment.trajectory, '#f3f4f6') }}">
+      'safe_throughout': 'var(--green)', 'concern_then_refuse': 'var(--yellow)',
+      'concern_then_comply': 'var(--orange)', 'comply_no_deliberation': 'var(--red)',
+      'gradual_escalation': 'var(--purple)', 'mixed_inconclusive': 'var(--bg-3)'
+    }.get(assessment.trajectory, 'var(--bg-3)') }}">
       {{ assessment.trajectory.replace('_', ' ') }}
     </span>
     {% endif %}
@@ -154,26 +154,14 @@ let activeGroups = new Set(USED_GROUPS);
 // ── Score → background color ──────────────────────────────────
 function scoreToRgb(score) {
   const s = Math.max(-5, Math.min(5, parseFloat(score) || 0));
-  // neutral (#f8fafc) → green (#dcfce7) for positive
-  // neutral (#f8fafc) → red  (#fee2e2) for negative
-  const neutral = [248, 250, 252];
-  const pos     = [220, 252, 231];
-  const neg     = [254, 226, 226];
-  let r, g, b;
   if (s > 0) {
-    const t = s / 5;
-    r = Math.round(neutral[0] + t * (pos[0] - neutral[0]));
-    g = Math.round(neutral[1] + t * (pos[1] - neutral[1]));
-    b = Math.round(neutral[2] + t * (pos[2] - neutral[2]));
+    const p = (s / 5) * 100;
+    return `color-mix(in srgb, var(--green) ${p}%, var(--bg-1))`;
   } else if (s < 0) {
-    const t = (-s) / 5;
-    r = Math.round(neutral[0] + t * (neg[0] - neutral[0]));
-    g = Math.round(neutral[1] + t * (neg[1] - neutral[1]));
-    b = Math.round(neutral[2] + t * (neg[2] - neutral[2]));
-  } else {
-    [r, g, b] = neutral;
+    const p = (-s / 5) * 100;
+    return `color-mix(in srgb, var(--red) ${p}%, var(--bg-1))`;
   }
-  return `rgb(${r},${g},${b})`;
+  return 'var(--bg-1)';
 }
 
 // ── Apply current mode + filter to all spans ──────────────────

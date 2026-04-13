@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import threading
-from collections import Counter
+import time
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +29,171 @@ from rich.table import Table
 
 from thesis_schema import AnnotatedSpan, ConversationEntry
 
-from .labeler import LabelingError, build_client, label_entry, load_secrets
+from .labeler import BillingQuotaError, LabelingError, build_client, format_prompt, label_entry, load_secrets
 from .mapper import map_sentences_to_spans
 from .schema import JudgeConfig, LabelerConfig, LabelingOutput, MapperConfig, PipelineConfig
+
+
+# ── Token budget ──────────────────────────────────────────────────────────────
+
+class TokenBudget:
+    """Thread-safe daily token budget tracker with file persistence."""
+
+    def __init__(self, daily_limit: int, state_file: Path):
+        self.daily_limit = daily_limit
+        self.state_file = state_file
+        self._lock = threading.Lock()
+        self._today = datetime.now(timezone.utc).date().isoformat()
+        self._data: dict[str, int] = {}
+        self._load()
+        self.stop_event = threading.Event()
+        if self.tokens_used_today() >= self.daily_limit:
+            self.stop_event.set()
+
+    def _load(self) -> None:
+        if self.state_file.exists():
+            try:
+                with open(self.state_file) as f:
+                    self._data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._data = {}
+
+    def _save(self) -> None:
+        tmp = self.state_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self._data, indent=2))
+        tmp.rename(self.state_file)
+
+    def tokens_used_today(self) -> int:
+        return self._data.get(self._today, 0)
+
+    def remaining(self) -> int:
+        return max(0, self.daily_limit - self.tokens_used_today())
+
+    def can_proceed(self) -> bool:
+        return not self.stop_event.is_set()
+
+    def can_afford(self, estimated_tokens: int) -> bool:
+        """Return False if spending estimated_tokens would push us over the daily limit."""
+        with self._lock:
+            return self._data.get(self._today, 0) + estimated_tokens <= self.daily_limit
+
+    def consume(self, tokens: int) -> None:
+        with self._lock:
+            self._data[self._today] = self._data.get(self._today, 0) + tokens
+            self._save()
+            if self._data[self._today] >= self.daily_limit:
+                self.stop_event.set()
+
+
+# ── Request rate limiter (RPM + RPD) ──────────────────────────────────────────
+
+class RequestRateLimiter:
+    """Thread-safe RPM + RPD rate limiter with persistent daily request tracking.
+
+    RPM is enforced via a sliding-window queue of recent request timestamps.
+    Workers calling ``acquire()`` block until a slot is available.
+    RPD is tracked in a JSON state file; once the daily limit is reached the
+    ``stop_event`` is set so workers return early without acquiring new slots.
+    """
+
+    def __init__(self, rpm: int, rpd: int, state_file: Path):
+        self.rpm = rpm
+        self.rpd = rpd
+        self.state_file = state_file
+        self._lock = threading.Lock()
+        self._today = datetime.now(timezone.utc).date().isoformat()
+        self._rpm_window: deque[float] = deque()
+        self._daily_counts: dict[str, int] = {}
+        self._load()
+        self.stop_event = threading.Event()
+        if self.requests_today() >= self.rpd:
+            self.stop_event.set()
+
+    def _load(self) -> None:
+        if self.state_file.exists():
+            try:
+                with open(self.state_file) as f:
+                    self._daily_counts = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._daily_counts = {}
+
+    def _save(self) -> None:
+        tmp = self.state_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self._daily_counts, indent=2))
+        tmp.rename(self.state_file)
+
+    def requests_today(self) -> int:
+        return self._daily_counts.get(self._today, 0)
+
+    def remaining_today(self) -> int:
+        return max(0, self.rpd - self.requests_today())
+
+    def can_proceed(self) -> bool:
+        return not self.stop_event.is_set()
+
+    def acquire(self) -> bool:
+        """Block until an RPM slot is available. Returns False if RPD limit hit."""
+        while True:
+            if not self.can_proceed():
+                return False
+            with self._lock:
+                now = time.monotonic()
+                cutoff = now - 60.0
+                while self._rpm_window and self._rpm_window[0] <= cutoff:
+                    self._rpm_window.popleft()
+                if len(self._rpm_window) < self.rpm:
+                    self._rpm_window.append(now)
+                    return True
+                wait_until = self._rpm_window[0] + 60.1
+            sleep_secs = wait_until - time.monotonic()
+            if sleep_secs > 0:
+                time.sleep(min(sleep_secs, 5.0))
+
+    def record(self) -> None:
+        """Increment the daily request counter after a completed API call."""
+        with self._lock:
+            self._daily_counts[self._today] = self._daily_counts.get(self._today, 0) + 1
+            self._save()
+            if self._daily_counts[self._today] >= self.rpd:
+                self.stop_event.set()
+
+    def exhaust_today(self) -> None:
+        """Record that the billing API quota was exhausted today.
+
+        Uses a separate flag rather than inflating the request counter, so the
+        dashboard still shows the real number of successful calls made today.
+        On the next run, the flag is detected and the judge skips immediately.
+        """
+        with self._lock:
+            self._daily_counts[f"{self._today}:billing_exhausted"] = True
+            self._save()
+            self.stop_event.set()
+
+    def is_billing_exhausted_today(self) -> bool:
+        return bool(self._daily_counts.get(f"{self._today}:billing_exhausted", False))
+
+
+# ── Entry limit ───────────────────────────────────────────────────────────────
+
+class EntryLimit:
+    """Semaphore that ensures exactly N entries are labeled across all files."""
+
+    def __init__(self, max_entries: int):
+        self.max_entries = max_entries
+        self._sem = threading.Semaphore(max_entries)
+        self.stop_event = threading.Event()
+
+    def can_proceed(self) -> bool:
+        return not self.stop_event.is_set()
+
+    def try_acquire(self) -> bool:
+        """Atomically claim one entry slot. Returns False if limit already reached."""
+        if self.stop_event.is_set():
+            return False
+        acquired = self._sem.acquire(blocking=False)
+        if not acquired:
+            self.stop_event.set()
+        return acquired
 
 
 # ── Checkpoint ────────────────────────────────────────────────────────────────
@@ -46,11 +210,32 @@ class CheckpointManager:
         }
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _is_transient_error(reason: str) -> bool:
+        """Return True if the failure reason is transient (quota/rate-limit), not permanent."""
+        r = reason.lower()
+        return any(kw in r for kw in (
+            "quota", "billing", "check your plan", "429", "rate limit", "resource_exhausted",
+        ))
+
     def load(self) -> set[str]:
-        """Load existing checkpoint. Returns set of already-labeled IDs."""
+        """Load existing checkpoint. Returns set of already-labeled IDs.
+
+        Transient failures (quota, billing, 429) are purged from failed_ids on load
+        so they are retried on the next run rather than staying stuck permanently.
+        """
         if self.path.exists():
             with open(self.path) as f:
                 self._data = json.load(f)
+
+        # Purge transient failures — they were caused by quota/rate-limit, not bad data.
+        # They'll be retried fresh next run; if quota is available they'll succeed.
+        failed = self._data.get("failed_ids", {})
+        if isinstance(failed, dict):
+            permanent = {k: v for k, v in failed.items() if not self._is_transient_error(v)}
+            if len(permanent) < len(failed):
+                self._data["failed_ids"] = permanent
+
         return set(self._data.get("labeled_ids", []))
 
     def save(self) -> None:
@@ -195,11 +380,16 @@ def process_file(
     progress: Progress,
     file_task: TaskID,
     reset_checkpoints: bool = False,
-) -> tuple[int, int, int]:
+    token_budget: TokenBudget | None = None,
+    rate_limiter: RequestRateLimiter | None = None,
+    entry_limit: EntryLimit | None = None,
+    per_file_max: int | None = None,
+    allowed_ids: list[str] | None = None,
+) -> tuple[int, int, int, int]:
     """Process one JSONL file.
 
     Returns:
-        (labeled_count, skipped_count, failed_count)
+        (labeled_count, skipped_count, failed_count, budget_stopped_count)
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -222,19 +412,41 @@ def process_file(
             except Exception as e:
                 console.print(f"[yellow]  Skip malformed line in {input_path.name}: {e}[/yellow]")
 
+    # When a work order is active, restrict to the specified IDs and honour their order.
+    # This ensures all judges target the same entries regardless of per-judge skips.
+    if allowed_ids is not None:
+        id_to_entry = {e.id: e for e in entries}
+        entries = [id_to_entry[eid] for eid in allowed_ids if eid in id_to_entry]
+
     progress.update(file_task, total=len(entries))
 
     write_lock = threading.Lock()
     labeled = 0
     skipped = 0
     failed = 0
+    budget_stopped = 0
     since_checkpoint = 0
 
+    # Per-file entry cap: tracks successful labels (not attempts) so that
+    # content-filter failures don't eat the per-file budget.
+    per_file_labeled = [0]
+    per_file_stop = threading.Event()
+
     def _process_one(entry: ConversationEntry) -> str:
-        """Process a single entry. Returns "labeled", "skipped", or "failed"."""
+        """Process a single entry. Returns "labeled", "skipped", "budget", or "failed"."""
         # Skip already done
         if entry.id in done_ids:
             return "skipped"
+
+        # Quick limit checks before any heavy work
+        if token_budget is not None and not token_budget.can_proceed():
+            return "budget"
+        if rate_limiter is not None and not rate_limiter.can_proceed():
+            return "budget"
+        if entry_limit is not None and not entry_limit.can_proceed():
+            return "budget"
+        if per_file_stop.is_set():
+            return "budget"
 
         # Skip if already annotated (and not overwriting)
         if entry.annotations and not pipeline_cfg.overwrite_existing:
@@ -264,6 +476,28 @@ def process_file(
 
         response_text = assistant_content or ""
 
+        # Pre-flight token estimate: skip if this request would push us over the daily budget.
+        # Estimate = prompt chars / 4 (rough token heuristic) + max output tokens.
+        if token_budget is not None:
+            estimated_prompt_tokens = len(format_prompt(
+                prompt_template, user_prompt, reasoning_text, response_text,
+                pipeline_cfg.response_sentences,
+            )) // 4
+            max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
+            if not token_budget.can_afford(estimated_prompt_tokens + max_comp):
+                token_budget.stop_event.set()
+                return "budget"
+
+        # Atomically claim one entry slot (prevents over-labeling with concurrent workers)
+        if entry_limit is not None:
+            if not entry_limit.try_acquire():
+                return "budget"
+
+        # Acquire RPM slot — blocks until a slot is free, returns False if RPD hit
+        if rate_limiter is not None:
+            if not rate_limiter.acquire():
+                return "budget"
+
         # Call LLM
         def warn(msg: str) -> None:
             console.print(f"[dim yellow]{msg}[/dim yellow]")
@@ -281,10 +515,27 @@ def process_file(
                 max_retries=pipeline_cfg.max_retries,
                 retry_delay=pipeline_cfg.retry_delay,
             )
+        except BillingQuotaError as e:
+            console.print(f"[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
+            if rate_limiter is not None:
+                rate_limiter.stop_event.set()
+            if token_budget is not None:
+                token_budget.stop_event.set()
+            return "budget"
         except LabelingError as e:
-            checkpoint.mark_failed(entry.id, str(e.last_exception or e.reason))
-            console.print(f"[red]  Failed [{entry.id[:12]}]: {e.reason}[/red]")
+            detail = str(e.last_exception) if e.last_exception else e.reason
+            checkpoint.mark_failed(entry.id, detail)
+            console.print(f"[red]  Failed [{entry.id[:12]}]: {detail[:120]}[/red]")
             return "failed"
+
+        # Update limiters after a successful call
+        if rate_limiter is not None:
+            rate_limiter.record()
+        if token_budget is not None:
+            tokens_used = labeling_output.metadata.get("usage", {}).get("total_tokens", 0)
+            if tokens_used:
+                token_budget.consume(tokens_used)
+        # entry_limit: slot was already claimed atomically via try_acquire()
 
         # Map to spans
         updated_entry = apply_labeling_output(
@@ -301,6 +552,9 @@ def process_file(
             with open(output_path, "a", encoding="utf-8") as f:
                 f.write(updated_entry.model_dump_json() + "\n")
             checkpoint.mark_done(entry.id)
+            per_file_labeled[0] += 1
+            if per_file_max is not None and per_file_labeled[0] >= per_file_max:
+                per_file_stop.set()
 
         return "labeled"
 
@@ -322,13 +576,15 @@ def process_file(
                     since_checkpoint = 0
             elif result == "skipped":
                 skipped += 1
+            elif result == "budget":
+                budget_stopped += 1
             else:
                 failed += 1
 
             progress.advance(file_task)
 
     checkpoint.save()
-    return labeled, skipped, failed
+    return labeled, skipped, failed, budget_stopped
 
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────
@@ -398,8 +654,97 @@ def run_pipeline(
     # Load prompt template
     prompt_template = prompt_path.read_text(encoding="utf-8")
 
+    # Set up token budget (daily token limit for OpenAI-style billing)
+    token_budget: TokenBudget | None = None
+    if config.pipeline.token_budget is not None:
+        budget_state_path = config.resolve_path(config_path, config.pipeline.budget_state_file)
+        token_budget = TokenBudget(
+            daily_limit=config.pipeline.token_budget,
+            state_file=budget_state_path,
+        )
+        used = token_budget.tokens_used_today()
+        console.print(
+            f"[bold]Token budget:[/bold] {config.pipeline.token_budget:,} / day — "
+            f"used today: [yellow]{used:,}[/yellow] — "
+            f"remaining: [green]{token_budget.remaining():,}[/green]"
+        )
+        if not token_budget.can_proceed():
+            console.print("[bold red]Daily token budget already exhausted. Nothing to do.[/bold red]")
+            return
+
+    # Set up request rate limiter (RPM + RPD from judge config)
+    rate_limiter: RequestRateLimiter | None = None
+    if effective_judge.rpd is not None or effective_judge.rpm is not None:
+        rpm = effective_judge.rpm or 9999
+        rpd = effective_judge.rpd or 9999999
+        req_state_path = config.resolve_path(config_path, config.pipeline.request_state_file)
+        rate_limiter = RequestRateLimiter(rpm=rpm, rpd=rpd, state_file=req_state_path)
+        reqs = rate_limiter.requests_today()
+        console.print(
+            f"[bold]Request budget:[/bold] {rpd:,} req/day, {rpm} req/min — "
+            f"used today: [yellow]{reqs:,}[/yellow] — "
+            f"remaining: [green]{rate_limiter.remaining_today():,}[/green]"
+        )
+        if not rate_limiter.can_proceed():
+            console.print("[bold red]Daily request budget already exhausted. Nothing to do.[/bold red]")
+            return
+
+    # Set up entry limit (--max-entries)
+    entry_limit: EntryLimit | None = None
+    if config.pipeline.max_entries is not None:
+        entry_limit = EntryLimit(max_entries=config.pipeline.max_entries)
+        console.print(
+            f"[bold]Entry limit:[/bold] stopping after [cyan]{config.pipeline.max_entries}[/cyan] labeled entries"
+        )
+
+    def _any_limit_exhausted() -> bool:
+        if token_budget is not None and not token_budget.can_proceed():
+            return True
+        if rate_limiter is not None and not rate_limiter.can_proceed():
+            return True
+        if entry_limit is not None and not entry_limit.can_proceed():
+            return True
+        return False
+
+    # Work order: shared pre-generated list of entry IDs all judges target.
+    # When set, it overrides shuffle_files and max_entries_per_file.
+    work_order: dict[str, list[str]] | None = None  # filename → [id, ...]
+    work_order_file_order: list[Path] | None = None
+
+    if config.pipeline.work_order_file:
+        wo_path = config.resolve_path(config_path, config.pipeline.work_order_file)
+        if wo_path.exists():
+            with open(wo_path) as _f:
+                _wo = json.load(_f)
+            work_order = _wo.get("per_file", {})
+            # Reconstruct absolute paths in the order the work order specifies
+            input_by_name = {p.name: p for p in input_files}
+            work_order_file_order = [
+                input_by_name[name]
+                for name in _wo.get("file_order", [])
+                if name in input_by_name
+            ]
+            console.print(
+                f"[bold]Work order:[/bold] {wo_path.name} — "
+                f"{sum(len(v) for v in work_order.values())} target entries across "
+                f"{len(work_order)} files"
+            )
+        else:
+            console.print(f"[yellow]Work order file not found: {wo_path} — falling back to normal mode[/yellow]")
+
+    if work_order_file_order is not None:
+        input_files = work_order_file_order
+    elif config.pipeline.shuffle_files and len(input_files) > 1:
+        # Shuffle file order for breadth-first coverage across datasets.
+        # Seed with the UTC date so every judge running on the same day visits
+        # files in the same order — ensuring all judges label the same entries
+        # and their outputs are directly comparable.
+        input_files = list(input_files)
+        day_seed = datetime.now(timezone.utc).date().isoformat()
+        random.Random(day_seed).shuffle(input_files)
+
     # Summary table accumulator
-    results: list[tuple[str, int, int, int, int]] = []  # name, total, labeled, skipped, failed
+    results: list[tuple[str, int, int, int, int, int]] = []  # name, total, labeled, skipped, failed, budget_stopped
 
     with Progress(
         SpinnerColumn(),
@@ -418,7 +763,14 @@ def run_pipeline(
                 f"[cyan]{input_path.name}[/cyan]", total=None
             )
 
-            labeled, skipped, failed = process_file(
+            # Skip file if any limit was exhausted in a prior file
+            if _any_limit_exhausted():
+                console.print(
+                    f"[yellow]Limit reached — skipping {input_path.name} and remaining files[/yellow]"
+                )
+                break
+
+            labeled, skipped, failed, budget_stopped = process_file(
                 input_path=input_path,
                 output_path=out_path,
                 client=client,
@@ -430,10 +782,15 @@ def run_pipeline(
                 progress=progress,
                 file_task=file_task,
                 reset_checkpoints=reset_checkpoints,
+                token_budget=token_budget,
+                rate_limiter=rate_limiter,
+                entry_limit=entry_limit,
+                per_file_max=None if work_order else config.pipeline.max_entries_per_file,
+                allowed_ids=work_order.get(input_path.name) if work_order else None,
             )
 
-            total = labeled + skipped + failed
-            results.append((input_path.name, total, labeled, skipped, failed))
+            total = labeled + skipped + failed + budget_stopped
+            results.append((input_path.name, total, labeled, skipped, failed, budget_stopped))
             progress.update(file_task, description=f"[green]{input_path.name}[/green]")
 
     # Summary table
@@ -443,14 +800,16 @@ def run_pipeline(
     table.add_column("Labeled", justify="right", style="green")
     table.add_column("Skipped", justify="right", style="yellow")
     table.add_column("Failed", justify="right", style="red")
+    table.add_column("Budget stop", justify="right", style="magenta")
 
     totals = Counter()
-    for name, total, labeled, skipped, failed in results:
-        table.add_row(name, str(total), str(labeled), str(skipped), str(failed))
+    for name, total, labeled, skipped, failed, budget_stopped in results:
+        table.add_row(name, str(total), str(labeled), str(skipped), str(failed), str(budget_stopped))
         totals["total"] += total
         totals["labeled"] += labeled
         totals["skipped"] += skipped
         totals["failed"] += failed
+        totals["budget_stopped"] += budget_stopped
 
     if len(results) > 1:
         table.add_row(
@@ -459,6 +818,26 @@ def run_pipeline(
             str(totals["labeled"]),
             str(totals["skipped"]),
             str(totals["failed"]),
+            str(totals["budget_stopped"]),
         )
 
     console.print(table)
+
+    # Final status
+    if token_budget is not None:
+        console.print(
+            f"[bold]Token budget after run:[/bold] "
+            f"used today: [yellow]{token_budget.tokens_used_today():,}[/yellow] / {token_budget.daily_limit:,} — "
+            f"remaining: [green]{token_budget.remaining():,}[/green]"
+        )
+    if rate_limiter is not None:
+        console.print(
+            f"[bold]Request budget after run:[/bold] "
+            f"used today: [yellow]{rate_limiter.requests_today():,}[/yellow] / {rate_limiter.rpd:,} — "
+            f"remaining: [green]{rate_limiter.remaining_today():,}[/green]"
+        )
+    if _any_limit_exhausted():
+        console.print(
+            "[bold magenta]Daily limit reached. "
+            "Run again tomorrow to continue from where you left off.[/bold magenta]"
+        )

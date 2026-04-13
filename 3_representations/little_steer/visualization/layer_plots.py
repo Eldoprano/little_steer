@@ -255,3 +255,75 @@ def plot_confusion_matrix(
     plt.colorbar(im, ax=ax, shrink=0.8, label="Count")
     fig.tight_layout()
     return fig, ax
+
+
+# ---------------------------------------------------------------------------
+# plot_vector_similarity
+# ---------------------------------------------------------------------------
+
+def plot_vector_similarity(
+    similarity_matrix: np.ndarray,
+    labels: List[str],
+    figsize: Optional[Tuple[float, float]] = None,
+    short_labels: bool = True,
+) -> Tuple["Figure", "Axes"]:
+    """Heatmap of pairwise cosine similarities between steering vectors.
+
+    Useful for understanding which vectors capture overlapping directions.
+    High off-diagonal similarity may indicate redundant vectors or shared
+    behaviour representations.
+
+    Args:
+        similarity_matrix: (n, n) array from :func:`~little_steer.probing.vector_similarity_matrix`.
+        labels:            Descriptive labels for each vector.
+        figsize:           Figure size override. Defaults to a size based on n.
+        short_labels:      If True, abbreviate labels to ``label|method`` (drop layer/spec).
+
+    Returns:
+        ``(fig, ax)`` — a matplotlib figure and axes.
+
+    Example:
+        sim_mat, labels = ls.vector_similarity_matrix(vectors)
+        fig, ax = ls.plot_vector_similarity(sim_mat, labels)
+        plt.show()
+    """
+    n = len(labels)
+    if n == 0:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.text(0.5, 0.5, "No vectors", ha="center", va="center", transform=ax.transAxes)
+        return fig, ax
+
+    if short_labels:
+        display_labels = []
+        for lbl in labels:
+            parts = lbl.split("|")
+            if len(parts) >= 2:
+                display_labels.append(f"{parts[0]}|{parts[1]}")
+            else:
+                display_labels.append(lbl)
+    else:
+        display_labels = labels
+
+    size = figsize or (max(6, n * 0.5), max(5, n * 0.45))
+    fig, ax = plt.subplots(figsize=size)
+    _clean_axes(ax)
+
+    im = ax.imshow(similarity_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(display_labels, rotation=90, fontsize=7, ha="center")
+    ax.set_yticklabels(display_labels, fontsize=7)
+    ax.set_title("Vector Cosine Similarity", fontsize=10, color="#333", pad=8)
+
+    # Annotate cells for small matrices
+    if n <= 15:
+        for i in range(n):
+            for j in range(n):
+                val = similarity_matrix[i, j]
+                text_color = "white" if abs(val) > 0.7 else "#333"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=6, color=text_color)
+
+    plt.colorbar(im, ax=ax, shrink=0.8, label="Cosine Similarity")
+    fig.tight_layout()
+    return fig, ax

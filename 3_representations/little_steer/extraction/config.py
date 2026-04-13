@@ -82,6 +82,17 @@ class TokenSelection:
     high_entropy_fraction: float = 0.5
     """For decision_point_mean: fraction of tokens to keep (highest entropy)."""
 
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        valid_strategies = ("first", "last", "all", "first_n", "last_n")
+        if self.strategy not in valid_strategies:
+            raise ValueError(
+                f"Unknown strategy {self.strategy!r}. "
+                f"Choose from: {valid_strategies}"
+            )
+        if self.strategy in ("first_n", "last_n") and self.n < 1:
+            raise ValueError(f"n must be >= 1 for {self.strategy!r}, got {self.n}")
+
     @property
     def needs_logits(self) -> bool:
         """True if this aggregation strategy requires token probability distributions."""
@@ -135,7 +146,7 @@ class TokenSelection:
         elif self.strategy == "all":
             return (window_start, window_end)
 
-        elif self.strategy == "first_n": # ToDo: I think window_start + actual_n could be larger than window_len?
+        elif self.strategy == "first_n":
             actual_n = min(self.n, window_len)  # graceful for short spans
             return (window_start, window_start + actual_n)
 

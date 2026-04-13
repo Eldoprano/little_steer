@@ -4,15 +4,37 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Reasoning Viewer{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <nav class="navbar">
-    <a href="/" class="nav-brand">Reasoning Viewer</a>
-    <span class="nav-sub">Labeled reasoning traces</span>
+    <div>
+      <a href="/" class="nav-brand">Reasoning Viewer</a>
+      <span class="nav-sub">Labeled reasoning traces</span>
+    </div>
+    <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle dark/light mode">🌙</button>
   </nav>
   <main class="container">
     {% block content %}{% endblock %}
   </main>
+
+  <script>
+    (function () {
+      const root = document.documentElement;
+      const btn  = document.getElementById("theme-toggle");
+      const saved = localStorage.getItem("theme") || "dark";
+      root.dataset.theme = saved;
+      btn.textContent = saved === "dark" ? "☀️" : "🌙";
+
+      btn.addEventListener("click", () => {
+        const next = root.dataset.theme === "dark" ? "light" : "dark";
+        root.dataset.theme = next;
+        localStorage.setItem("theme", next);
+        btn.textContent = next === "dark" ? "☀️" : "🌙";
+      });
+    })();
+  </script>
 </body>
 </html>

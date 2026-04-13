@@ -81,9 +81,11 @@ from .probing import (
     score_dataset,
     get_token_similarities,
     evaluate_dataset,
+    vector_similarity_matrix,
 )
 from .steering import (
     steered_generate,
+    multi_steered_generate,
 )
 
 try:
@@ -95,6 +97,7 @@ try:
         plot_layer_discrimination,
         plot_layer_metrics,
         plot_confusion_matrix,
+        plot_vector_similarity,
     )
 except ImportError:
     pass
@@ -156,8 +159,10 @@ __all__ = [
     "score_dataset",
     "get_token_similarities",
     "evaluate_dataset",
+    "vector_similarity_matrix",
     # Steering (writing)
     "steered_generate",
+    "multi_steered_generate",
     # Visualization
     "render_token_similarity_html",
     "render_multilayer_html",
@@ -165,4 +170,5 @@ __all__ = [
     "plot_layer_discrimination",
     "plot_layer_metrics",
     "plot_confusion_matrix",
+    "plot_vector_similarity",
 ]

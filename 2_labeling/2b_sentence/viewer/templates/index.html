@@ -52,18 +52,18 @@
 </div>
 
 <!-- Cards grid -->
-<div class="cards-grid" id="cards-grid"></div>
+<div class="card-grid" id="cards-grid"></div>
 
 <script>
 const ALL = {{ summaries_json | safe }};
 
 const TRAJECTORY_COLORS = {
-  safe_throughout:        "#dcfce7",
-  concern_then_refuse:    "#fef9c3",
-  concern_then_comply:    "#fee2e2",
-  comply_no_deliberation: "#ffedd5",
-  gradual_escalation:     "#fee2e2",
-  mixed_inconclusive:     "#f3f4f6",
+  safe_throughout:        "var(--green, #a7c080)",
+  concern_then_refuse:    "var(--yellow, #dbbc7f)",
+  concern_then_comply:    "var(--orange, #e69875)",
+  comply_no_deliberation: "var(--red, #e67e80)",
+  gradual_escalation:     "var(--purple, #d699b6)",
+  mixed_inconclusive:     "var(--bg-3, #475258)",
 };
 
 function trajectoryLabel(t) {
@@ -71,14 +71,14 @@ function trajectoryLabel(t) {
 }
 
 function scoreColor(score) {
-  if (score >= 2)  return "#15803d";
-  if (score >= 0)  return "#374151";
-  if (score >= -2) return "#b45309";
-  return "#dc2626";
+  if (score >= 2)  return "var(--green)";
+  if (score >= 0)  return "var(--fg)";
+  if (score >= -2) return "var(--orange)";
+  return "var(--red)";
 }
 
 function renderCard(e) {
-  const tcolor = TRAJECTORY_COLORS[e.trajectory] || "#f3f4f6";
+  const tcolor = TRAJECTORY_COLORS[e.trajectory] || "var(--bg-3)";
   const sc = scoreColor(e.avg_score);
   const sign = e.avg_score >= 0 ? "+" : "";
   const judgeShort = shortModel(e.judge || "");

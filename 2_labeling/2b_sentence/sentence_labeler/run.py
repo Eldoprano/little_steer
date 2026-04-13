@@ -83,6 +83,18 @@ def _resolve_files(
     is_flag=True, default=False,
     help="Delete existing checkpoints and re-label all entries.",
 )
+@click.option(
+    "--token-budget",
+    default=None, type=int,
+    help="Override daily token limit from config (e.g. 2500000). "
+         "Run stops when the limit is reached; resume tomorrow to continue.",
+)
+@click.option(
+    "--max-entries",
+    default=None, type=int,
+    help="Stop after labeling this many entries total (across all files). "
+         "Useful for test runs (e.g. --max-entries 1).",
+)
 def cli(
     files: tuple[str, ...],
     config: str | None,
@@ -93,6 +105,8 @@ def cli(
     retries: int | None,
     dry_run: bool,
     reset_checkpoints: bool,
+    token_budget: int | None,
+    max_entries: int | None,
 ) -> None:
     """Label reasoning sentences in JSONL files using an LLM judge.
 
@@ -129,6 +143,10 @@ def cli(
         cfg.pipeline.max_workers = workers
     if retries is not None:
         cfg.pipeline.max_retries = retries
+    if token_budget is not None:
+        cfg.pipeline.token_budget = token_budget
+    if max_entries is not None:
+        cfg.pipeline.max_entries = max_entries
 
     # Resolve input files
     input_files = _resolve_files(files, glob_patterns)

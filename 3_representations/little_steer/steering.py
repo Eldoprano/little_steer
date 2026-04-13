@@ -156,3 +156,99 @@ def steered_generate(
     # Decode only the newly generated tokens
     new_tokens = output_ids[0][input_ids.shape[1]:]
     return model.tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
+def multi_steered_generate(
+    model: "LittleSteerModel",
+    messages: list[dict[str, str]] | str,
+    steering_specs: list[tuple["SteeringVector | torch.Tensor", int | None, float]],
+    *,
+    max_new_tokens: int = 256,
+    do_sample: bool = False,
+    temperature: float = 0.6,
+    top_p: float = 0.9,
+    add_generation_prompt: bool = True,
+) -> str:
+    """Generate text with multiple steering vectors applied simultaneously.
+
+    Allows composing multiple behaviour directions — e.g. steer towards
+    safety concern awareness while steering away from sycophancy.
+
+    Args:
+        model:            LittleSteerModel instance.
+        messages:         Chat messages or pre-formatted string.
+        steering_specs:   List of (vector, layer, alpha) tuples. Each vector
+                          is applied independently at its specified layer with
+                          the given alpha. ``layer`` can be None if vector is
+                          a SteeringVector (layer inferred from it).
+        max_new_tokens:   Generation token budget.
+        do_sample:        Sampling vs greedy.
+        temperature:      Sampling temperature.
+        top_p:            Nucleus sampling mass.
+        add_generation_prompt: Append generation prompt after messages.
+
+    Returns:
+        Generated text string.
+
+    Example:
+        output = ls.multi_steered_generate(model, messages, [
+            (safety_vec, None, 15.0),     # amplify safety concern
+            (sycophancy_vec, None, -10.0), # suppress sycophancy
+        ])
+    """
+    from .vectors.steering_vector import SteeringVector as _SV
+
+    # Resolve all steering specs
+    resolved: list[tuple[torch.Tensor, int | list[int], float]] = []
+    for vec, layer, alpha in steering_specs:
+        if alpha == 0.0:
+            continue
+        if isinstance(vec, _SV):
+            raw = vec.vector
+            steer_layer = layer if layer is not None else vec.layer
+        elif isinstance(vec, torch.Tensor):
+            if layer is None:
+                raise ValueError(
+                    "When steering_vec is a raw Tensor you must supply layer."
+                )
+            raw = vec
+            steer_layer = layer
+        else:
+            raise TypeError(
+                f"steering_vec must be a SteeringVector or torch.Tensor, "
+                f"got {type(vec).__name__!r}."
+            )
+        resolved.append((raw, steer_layer, alpha))
+
+    if not resolved:
+        return steered_generate(
+            model, messages, max_new_tokens=max_new_tokens,
+            do_sample=do_sample, temperature=temperature, top_p=top_p,
+            add_generation_prompt=add_generation_prompt,
+        )
+
+    # Format input
+    if isinstance(messages, str):
+        formatted = messages
+    else:
+        formatted = model.format_messages(
+            messages, add_generation_prompt=add_generation_prompt
+        )
+
+    input_ids = model.tokenizer(
+        formatted, return_tensors="pt", add_special_tokens=False,
+    )["input_ids"]
+
+    gen_kwargs: dict = {"max_new_tokens": max_new_tokens, "do_sample": do_sample}
+    if do_sample:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = top_p
+
+    st = model.st
+    with st.generate(input_ids, **gen_kwargs) as _gen:
+        for raw_vec, steer_layer, alpha in resolved:
+            st.steer(steer_layer, raw_vec, factor=alpha)
+        output_ids = st.generator.output.save()
+
+    new_tokens = output_ids[0][input_ids.shape[1]:]
+    return model.tokenizer.decode(new_tokens, skip_special_tokens=True)

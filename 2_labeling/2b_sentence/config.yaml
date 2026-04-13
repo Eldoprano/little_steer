@@ -36,6 +36,6 @@ mapper:
 
 # ── Output ────────────────────────────────────────────────────────────────────
 output:
-  dir: "data/labeled"            # relative to this config file
+  dir: "../../data/2b_labeled"            # relative to this config file
   suffix: ""                     # optional suffix before .jsonl (e.g. "_labeled")
   in_place: false                # if true, overwrite input files atomically

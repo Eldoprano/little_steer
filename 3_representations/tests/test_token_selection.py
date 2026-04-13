@@ -208,3 +208,19 @@ def test_extraction_plan_fluent_api():
     plan.add_spec("s2", ExtractionSpec(TokenSelection("last"), layers=[10]))
     assert "s1" in plan.specs
     assert "s2" in plan.specs
+
+
+# ── Validation ───────────────────────────────────────────────────────────────
+
+def test_invalid_strategy_raises():
+    """TokenSelection with an invalid strategy should raise ValueError."""
+    with pytest.raises(ValueError, match="Unknown strategy"):
+        TokenSelection("invalid_strategy")
+
+
+def test_negative_n_raises():
+    """first_n/last_n with n < 1 should raise."""
+    with pytest.raises(ValueError, match="n must be >= 1"):
+        TokenSelection("first_n", n=0)
+    with pytest.raises(ValueError, match="n must be >= 1"):
+        TokenSelection("last_n", n=-5)

@@ -4,7 +4,7 @@
 # Run:  python generate_responses.py --config config.yaml
 #       python generate_responses.py --config config.yaml --models qwen3-8b
 
-output_dir: "data"
+output_dir: "../data/1_generated"
 hf_token_file: "../.secrets.json"   # JSON file with {"hf_token": "hf_..."}
 
 
