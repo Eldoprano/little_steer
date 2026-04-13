@@ -79,3 +79,7 @@ data/3_representations/
 
 # Local assistant settings
 .claude/
+
+# Human labeling app build artifacts
+human_labeling/node_modules/
+human_labeling/dist/
