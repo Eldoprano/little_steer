@@ -80,9 +80,10 @@ data/3_representations/
 # Local assistant settings
 .claude/
 
-# Node modules (recursively for sub-projects)
+# Node modules and build artifacts (recursively)
 node_modules/
 **/node_modules/
+**/dist/
 
 # Human labeling app build artifacts
 human_labeling/dist/
