@@ -1,0 +1,39 @@
+# ── Judge LLM backend ─────────────────────────────────────────────────────────
+judge:
+  name: gemini-2.5-flash
+  model_id: gemini-2.5-flash
+  backend: gemini
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  api_key_source: gemini-free-api-key
+  temperature: 0.2
+  max_tokens: 8192
+  timeout: 120
+  rpm: 10    # free tier: 10 req/min
+  rpd: null   # let the API decide — true limit unknown
+
+secrets_file: "../../.secrets.json"
+prompt_file: "prompt.md"
+
+pipeline:
+  max_retries: 5
+  retry_delay: 10.0
+  checkpoint_every: 5
+  max_workers: 1
+  response_sentences: 5
+  skip_no_reasoning: true
+  skip_no_response: false
+  overwrite_existing: false
+  max_reasoning_chars: null
+  request_state_file: "gemini-2.5-flash_requests.json"
+  shuffle_files: true
+  work_order_file: "work_order.json"
+
+mapper:
+  fuzzy_threshold: 0.85
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+output:
+  dir: "../../data/2b_labeled"
+  suffix: "_gemini-2.5-flash"
+  in_place: false

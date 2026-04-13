@@ -79,3 +79,15 @@ data/3_representations/
 
 # Local assistant settings
 .claude/
+
+# Node modules (recursively for sub-projects)
+node_modules/
+**/node_modules/
+
+# Transient run logs and state
+*_requests.json
+*_token_budget.json
+work_order.json
+
+# Personal notes
+notes/
