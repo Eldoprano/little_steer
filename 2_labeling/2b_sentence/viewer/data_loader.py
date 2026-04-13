@@ -8,7 +8,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "labeled"
+DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled"
 
 # ── Label group metadata ───────────────────────────────────────────────────────
 

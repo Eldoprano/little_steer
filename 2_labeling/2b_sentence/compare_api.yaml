@@ -109,7 +109,7 @@ mapper:
   max_lookahead_min: 500
 
 output:
-  dir: "data/labeled"
+  dir: "../../data/2b_labeled"
   suffix: ""
   in_place: false
   comparison_json: false       # set to true (or use --compare-output) for merged JSON

@@ -61,9 +61,36 @@ class SteeringVectorBuilder:
         if methods is None:
             methods = ["mean_centering", "pca", "mean_difference", "linear_probe"]
 
+        # Validate that target and baseline labels exist in the extraction result
+        available_labels = extraction_result.labels()
+        if target_label not in available_labels:
+            raise ValueError(
+                f"target_label={target_label!r} not found in extraction result. "
+                f"Available labels: {available_labels}"
+            )
+        if baseline_label is not None and baseline_label not in available_labels:
+            raise ValueError(
+                f"baseline_label={baseline_label!r} not found in extraction result. "
+                f"Available labels: {available_labels}"
+            )
+
         vector_set = SteeringVectorSet()
 
         for spec_name in extraction_result.specs():
+            # Pre-compute "others" for mean_centering once per spec
+            # instead of recomputing for every layer
+            _others_cache: dict[int, dict[str, list]] = {}
+            if "mean_centering" in methods:
+                for layer in extraction_result.layers():
+                    others = {}
+                    for lbl in available_labels:
+                        if lbl != target_label:
+                            acts = extraction_result.get(spec_name, lbl, layer)
+                            if acts:
+                                others[lbl] = acts
+                    if others:
+                        _others_cache[layer] = others
+
             for layer in extraction_result.layers():
                 target_acts = extraction_result.get(spec_name, target_label, layer)
 
@@ -81,6 +108,7 @@ class SteeringVectorBuilder:
                         baseline_label=baseline_label,
                         pca_components=pca_components,
                         probe_C=probe_C,
+                        _others_cache=_others_cache,
                     )
                     if vec is not None:
                         vector_set.add(vec)
@@ -127,22 +155,15 @@ class SteeringVectorBuilder:
         baseline_label: str | None,
         pca_components: int,
         probe_C: float,
+        _others_cache: dict[int, dict[str, list]] | None = None,
     ) -> SteeringVector | None:
         """Build a single steering vector. Returns None on failure."""
         try:
             metadata = {"n_target_samples": len(target_acts)}
 
             if method_name == "mean_centering":
-                others = {}
-                for lbl in extraction_result.labels():
-                    if lbl != target_label:
-                        acts = extraction_result.get(spec_name, lbl, layer)
-                        if acts:
-                            others[lbl] = acts
+                others = (_others_cache or {}).get(layer, {})
                 if not others:
-                    warnings.warn(
-                        f"mean_centering: No other labels at (spec={spec_name}, layer={layer}) — skipping."
-                    )
                     return None
                 vector = MeanCentering.compute(target_acts, others)
                 metadata["n_baseline_categories"] = len(others)

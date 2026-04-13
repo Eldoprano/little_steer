@@ -213,7 +213,6 @@ class ActivationExtractor:
                 and ts.original_span.message_idx > first_response_idx
             ]
             if late_spans:
-                import warnings
                 warnings.warn(
                     f"'{entry.id}': {len(late_spans)} annotation(s) target messages "
                     f"after the first assistant response (message_idx > {first_response_idx}). "
@@ -271,7 +270,7 @@ class ActivationExtractor:
                         tracer.stop()
 
             logits: torch.Tensor | None = logits_saved  # None or (seq_len, vocab_size)
-            # breakpoint() 
+
             # 6. For each annotation × spec → slice & store
             for token_span in token_spans:
                 # Clamp token span to actual (possibly truncated) seq_len

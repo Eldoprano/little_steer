@@ -259,3 +259,23 @@ class TestPlotConfusionMatrix:
         er = make_evaluation_result()
         fig, ax = plot_confusion_matrix(er)
         assert "I_REPHRASE_PROMPT" in ax.get_title()
+
+
+class TestPlotVectorSimilarity:
+    def test_returns_fig_ax(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        from little_steer.visualization.layer_plots import plot_vector_similarity
+        import torch
+        sim_mat = np.array([[1.0, 0.5], [0.5, 1.0]])
+        labels = ["vec_A|pca|L20|last", "vec_B|mean|L20|last"]
+        fig, ax = plot_vector_similarity(sim_mat, labels)
+        assert fig is not None
+        assert ax is not None
+
+    def test_empty_no_crash(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        from little_steer.visualization.layer_plots import plot_vector_similarity
+        fig, ax = plot_vector_similarity(np.array([]).reshape(0, 0), [])
+        assert fig is not None

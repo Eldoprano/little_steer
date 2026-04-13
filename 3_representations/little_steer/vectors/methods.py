@@ -148,15 +148,6 @@ class LinearProbe:
         X_target = _stack(target)
         X_baseline = _stack(baseline)
 
-        # Balance classes if very unequal
-        min_n = min(len(X_target), len(X_baseline))
-        if len(X_target) > min_n * 3 or len(X_baseline) > min_n * 3:
-            import warnings
-            warnings.warn(
-                f"Class imbalance: target={len(X_target)}, baseline={len(X_baseline)}. "
-                "Consider using class_weight='balanced' or resampling."
-            )
-
         X = np.vstack([X_target, X_baseline])
         y = np.array([1] * len(X_target) + [0] * len(X_baseline))
 
@@ -164,7 +155,10 @@ class LinearProbe:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        clf = LogisticRegression(C=C, max_iter=max_iter, solver="lbfgs")
+        # Use balanced class weights to handle imbalanced datasets automatically
+        clf = LogisticRegression(
+            C=C, max_iter=max_iter, solver="lbfgs", class_weight="balanced"
+        )
         clf.fit(X_scaled, y)
 
         weight = torch.from_numpy(clf.coef_[0].copy()).float()
@@ -195,9 +189,14 @@ class LinearProbe:
         X_scaled = scaler.fit_transform(X)
 
         C = kwargs.get("C", 1.0)
-        clf = LogisticRegression(C=C, max_iter=kwargs.get("max_iter", 1000), solver="lbfgs")
+        clf = LogisticRegression(
+            C=C, max_iter=kwargs.get("max_iter", 1000),
+            solver="lbfgs", class_weight="balanced",
+        )
 
-        cv_scores = cross_val_score(clf, X_scaled, y, cv=min(5, len(y) // 2))
+        n_folds = min(5, min(np.sum(y == 0), np.sum(y == 1)), len(y) // 2)
+        n_folds = max(2, n_folds)
+        cv_scores = cross_val_score(clf, X_scaled, y, cv=n_folds)
         accuracy = float(cv_scores.mean())
 
         vector = LinearProbe.compute(target, baseline, **kwargs)

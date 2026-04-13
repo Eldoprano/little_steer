@@ -198,13 +198,19 @@ def render_multilayer_html(
     truncated = n_tokens > max_display_tokens
     display_n = min(n_tokens, max_display_tokens)
 
-    # Global colour range across all layers
-    all_sims: list[float] = []
+    # Global colour range across all layers (streaming min/max to avoid materializing)
+    global_min = float("inf")
+    global_max = float("-inf")
+    has_data = False
     for layer_idx in display_layers:
-        all_sims.extend(token_sims.similarities[layer_idx][:display_n])
-    if not all_sims:
+        sims_slice = token_sims.similarities[layer_idx][:display_n]
+        if sims_slice:
+            has_data = True
+            global_min = min(global_min, min(sims_slice))
+            global_max = max(global_max, max(sims_slice))
+    if not has_data:
         return "<p>No similarity data to display.</p>"
-    abs_max = max(abs(min(all_sims)), abs(max(all_sims)), 1e-6)
+    abs_max = max(abs(global_min), abs(global_max), 1e-6)
     vmin, vmax = -abs_max, abs_max
 
     labeled_tokens = _label_token_set(token_sims, token_sims.label)
@@ -314,7 +320,6 @@ def show_token_similarity(
 
     token_sims = get_token_similarities(model, entry, vector, layers=layers)
 
-    # ToDo: In multi-layer also show which tokens are labeled with the behaviour we are testing for
     if multilayer:
         html_str = render_multilayer_html(token_sims, layers=layers)
     else:

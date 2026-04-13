@@ -111,6 +111,7 @@ def decision_point_mean(
     n = activations.shape[0]
     if n <= 1:
         return activations.mean(dim=0)
+    high_entropy_fraction = max(0.0, min(1.0, high_entropy_fraction))
     probs = _probs_from_logits(token_logits)
     ent = _token_entropy(probs)  # (n_tokens,)
     cutoff = torch.quantile(ent, 1.0 - high_entropy_fraction)

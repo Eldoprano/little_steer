@@ -199,6 +199,8 @@ class JudgeConfig(BaseModel):
     # When True, run.py will pause before this judge and ask the user to
     # load the model in LMStudio before continuing.
     lmstudio_prompt: bool = False
+    rpm: int | None = None  # requests per minute limit for this judge; null = no limit
+    rpd: int | None = None  # requests per day limit for this judge; null = no limit
 
 
 class PipelineConfig(BaseModel):
@@ -211,6 +213,13 @@ class PipelineConfig(BaseModel):
     skip_no_response: bool = False
     overwrite_existing: bool = False
     max_reasoning_chars: int | None = None  # crop reasoning before this many chars (at sentence boundary)
+    token_budget: int | None = None  # daily token limit (tokens); null = no limit
+    budget_state_file: str = "token_budget_state.json"  # path relative to config file
+    request_state_file: str = "request_budget_state.json"  # path relative to config file
+    max_entries: int | None = None  # stop after labeling this many entries (across all files); null = no limit
+    max_entries_per_file: int | None = None  # stop after labeling this many entries per file; null = no limit
+    shuffle_files: bool = True  # randomise file order each run for breadth-first coverage
+    work_order_file: str | None = None  # shared work order JSON; when set, overrides shuffle/max_entries_per_file
 
 
 class MapperConfig(BaseModel):
@@ -220,7 +229,7 @@ class MapperConfig(BaseModel):
 
 
 class OutputConfig(BaseModel):
-    dir: str = "data/labeled"
+    dir: str = "../../data/2b_labeled"
     suffix: str = ""
     in_place: bool = False
 

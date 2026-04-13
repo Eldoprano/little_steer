@@ -592,6 +592,11 @@ def evaluate_dataset(
             torch.cuda.empty_cache()
 
     # Compute metrics
+    from sklearn.metrics import (
+        roc_auc_score, f1_score, precision_recall_fscore_support,
+        confusion_matrix as sk_cm,
+    )
+
     results: List[EvaluationResult] = []
     for (label, method, layer), buckets in acc.items():
         present = buckets["present"]
@@ -604,36 +609,44 @@ def evaluate_dataset(
         mean_present = float(np.mean(present)) if present else float("nan")
         mean_absent = float(np.mean(absent)) if absent else float("nan")
 
+        # Need both classes for meaningful metrics
+        if n_p == 0 or n_a == 0:
+            results.append(EvaluationResult(
+                label=label, layer=layer, method=method,
+                aggregation=aggregation,
+                auroc=float("nan"), f1=0.0, precision=0.0, recall=0.0,
+                threshold=0.0, confusion_matrix=np.zeros((2, 2), dtype=int),
+                mean_present=mean_present, mean_absent=mean_absent,
+                n_present=n_p, n_absent=n_a,
+            ))
+            continue
+
         y_scores = present + absent
         y_true = [1] * n_p + [0] * n_a
 
         # AUROC
         try:
-            from sklearn.metrics import roc_auc_score
-            auroc = float(roc_auc_score(y_true, y_scores)) if len(set(y_true)) > 1 else float("nan")
+            auroc = float(roc_auc_score(y_true, y_scores))
         except Exception:
             auroc = float("nan")
 
-        # Optimal threshold (maximise F1)
+        # Optimal threshold (maximise F1) — use more granular thresholds
         best_f1, best_thr = 0.0, 0.0
         best_prec, best_rec = 0.0, 0.0
-        if y_scores:
-            from sklearn.metrics import f1_score, precision_recall_fscore_support
-            thresholds = np.linspace(min(y_scores), max(y_scores), 50)
-            for thr in thresholds:
-                preds = [1 if s >= thr else 0 for s in y_scores]
-                f1 = f1_score(y_true, preds, zero_division=0)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_thr = float(thr)
-                    p, r, _, _ = precision_recall_fscore_support(
-                        y_true, preds, average="binary", zero_division=0
-                    )
-                    best_prec, best_rec = float(p), float(r)
+        thresholds = np.linspace(min(y_scores), max(y_scores), 100)
+        for thr in thresholds:
+            preds = [1 if s >= thr else 0 for s in y_scores]
+            f1 = f1_score(y_true, preds, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thr = float(thr)
+                p, r, _, _ = precision_recall_fscore_support(
+                    y_true, preds, average="binary", zero_division=0
+                )
+                best_prec, best_rec = float(p), float(r)
 
         # Confusion matrix at best threshold
         preds = [1 if s >= best_thr else 0 for s in y_scores]
-        from sklearn.metrics import confusion_matrix as sk_cm
         cm = sk_cm(y_true, preds, labels=[0, 1])
 
         results.append(EvaluationResult(
@@ -866,3 +879,42 @@ def score_dataset(
 
     scores.sort(key=lambda s: (s.label, s.method, s.layer))
     return scores
+
+
+# ---------------------------------------------------------------------------
+# vector_similarity_matrix
+# ---------------------------------------------------------------------------
+
+
+def vector_similarity_matrix(
+    vector_set: "SteeringVectorSet",
+) -> tuple[np.ndarray, list[str]]:
+    """Compute pairwise cosine similarity between all vectors in a set.
+
+    Useful for understanding which labels, methods, or layers produce
+    correlated steering directions. High similarity between vectors built
+    for different labels may indicate they capture overlapping behaviours.
+
+    Args:
+        vector_set: A SteeringVectorSet to compare.
+
+    Returns:
+        (similarity_matrix, labels) where:
+          - similarity_matrix is an (n, n) numpy array of cosine similarities
+          - labels is a list of descriptive strings for each vector
+    """
+    vecs = list(vector_set)
+    n = len(vecs)
+    if n == 0:
+        return np.array([]).reshape(0, 0), []
+
+    # Stack all vectors into a matrix and normalize
+    mat = torch.stack([v.vector.float() for v in vecs])  # (n, hidden_dim)
+    mat_norm = F.normalize(mat, dim=-1)  # (n, hidden_dim)
+    sim_matrix = (mat_norm @ mat_norm.T).numpy()  # (n, n)
+
+    labels = [
+        f"{v.label}|{v.method}|L{v.layer}|{v.extraction_spec}"
+        for v in vecs
+    ]
+    return sim_matrix, labels
