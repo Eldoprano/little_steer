@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""run_all.py — Run all judges in parallel with a live Rich dashboard.
+
+Usage:
+    uv run run_all.py                        # label everything in data/1_generated/
+    uv run run_all.py path/to/file.jsonl     # label a specific file
+    uv run run_all.py status                 # show status of a running or finished batch
+
+Each judge's full output is saved to run_all_<name>.log.
+Checkpoints prevent re-labeling — re-run tomorrow to resume after a budget reset.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
+
+HERE = Path(__file__).parent
+OUTPUT_DIR = (HERE / "../../data/2b_labeled").resolve()
+
+CONFIGS = [
+    "gpt5mini.yaml",
+    # "gpt52.yaml",
+    "gemini-2.5-flash.yaml",
+    "gemini-2.5-flash-lite.yaml",
+    "gemini-3-flash-preview.yaml",
+    "gemini-3.1-flash-lite-preview.yaml",
+]
+
+# Matches ANSI escape codes and Unicode spinner/box-drawing characters
+_NOISE_RE = re.compile(r"\x1b\[[0-9;]*[mKABCDEFGHJKSTf]|[━─│┌┐└┘├┤┬┴┼╴╵╶╷]")
+_SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+# Lines matching these patterns are "signal" lines worth showing
+_SIGNAL_RE = re.compile(
+    r"(failed|error|billing quota|daily limit|budget|labeled|summary|judge|traceback|starting)",
+    re.IGNORECASE,
+)
+
+
+# ── Config loading ─────────────────────────────────────────────────────────────
+
+@dataclass
+class JudgeMeta:
+    config_file: str
+    name: str
+    suffix: str
+    budget_type: str       # "tokens" or "requests"
+    budget_limit: int
+    budget_state_file: Path
+    logfile: Path
+
+
+def load_judge_meta(config_name: str) -> JudgeMeta:
+    config_path = HERE / config_name
+    with open(config_path) as f:
+        data = yaml.safe_load(f)
+
+    judge = data.get("judge") or {}
+    name = judge.get("name", config_name.replace(".yaml", ""))
+    suffix = (data.get("output") or {}).get("suffix", f"_{name}")
+    pipeline = data.get("pipeline") or {}
+
+    if pipeline.get("token_budget") is not None:
+        budget_type = "tokens"
+        budget_limit = int(pipeline["token_budget"])
+        state_file = pipeline.get("budget_state_file", "token_budget_state.json")
+    else:
+        budget_type = "requests"
+        budget_limit = int(judge.get("rpd") or 9_999_999)
+        state_file = pipeline.get("request_state_file", "request_budget_state.json")
+
+    return JudgeMeta(
+        config_file=config_name,
+        name=name,
+        suffix=suffix,
+        budget_type=budget_type,
+        budget_limit=budget_limit,
+        budget_state_file=(config_path.parent / state_file).resolve(),
+        logfile=HERE / f"run_all_{config_name.replace('.yaml', '')}.log",
+    )
+
+
+# ── Data readers ───────────────────────────────────────────────────────────────
+
+def read_budget_used(meta: JudgeMeta) -> int:
+    if not meta.budget_state_file.exists():
+        return 0
+    try:
+        data = json.loads(meta.budget_state_file.read_text())
+        today = datetime.now(timezone.utc).date().isoformat()
+        return int(data.get(today, 0))
+    except Exception:
+        return 0
+
+
+def count_labeled(suffix: str) -> int:
+    if not OUTPUT_DIR.exists():
+        return 0
+    total = 0
+    for f in OUTPUT_DIR.glob(f"*{suffix}.jsonl"):
+        try:
+            total += sum(1 for _ in open(f))
+        except Exception:
+            pass
+    return total
+
+
+def _clean(line: str) -> str:
+    line = _NOISE_RE.sub("", line)
+    return "".join(c for c in line if c not in _SPINNER_CHARS).strip()
+
+
+def parse_log(logfile: Path) -> dict:
+    """Extract useful info from a judge log file."""
+    result = {
+        "error_count": 0,
+        "budget_exhausted": False,
+        "done": False,
+        "last_signal": "",
+    }
+    if not logfile.exists():
+        return result
+
+    try:
+        lines = logfile.read_text(errors="replace").splitlines()
+    except Exception:
+        return result
+
+    for line in lines:
+        clean = _clean(line)
+        if not clean or len(clean) < 8:
+            continue
+        lower = clean.lower()
+
+        if "daily limit reached" in lower or "budget already exhausted" in lower:
+            result["budget_exhausted"] = True
+        if "labeling summary" in lower:
+            result["done"] = True
+        if _SIGNAL_RE.search(clean):
+            # Count failures (but not "budget" lines — those aren't errors)
+            if "failed" in lower and "budget" not in lower:
+                result["error_count"] += 1
+            result["last_signal"] = clean[:100]
+
+    return result
+
+
+# ── Process state ──────────────────────────────────────────────────────────────
+
+@dataclass
+class JudgeState:
+    meta: JudgeMeta
+    proc: subprocess.Popen | None = None
+    exit_code: int | None = None
+    _log_fh: object = None  # kept open so the subprocess can write
+
+    def poll(self) -> None:
+        """Update exit_code if the process has finished."""
+        if self.proc is not None and self.exit_code is None:
+            ret = self.proc.poll()
+            if ret is not None:
+                self.exit_code = ret
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.exit_code is None
+
+
+# ── Rich rendering ─────────────────────────────────────────────────────────────
+
+def _status_text(state: JudgeState, log: dict) -> Text:
+    if state.proc is None:
+        return Text("WAITING", style="dim")
+    if state.running:
+        return Text("● RUNNING", style="bold green")
+    if log["budget_exhausted"]:
+        return Text("⏸ BUDGET", style="yellow")
+    if state.exit_code == 0 or log["done"]:
+        return Text("✓ DONE", style="green")
+    return Text(f"✗ EXIT {state.exit_code}", style="bold red")
+
+
+def _budget_text(used: int, limit: int, budget_type: str) -> Text:
+    pct = used / limit if limit > 0 else 0.0
+    style = "red" if pct >= 1.0 else "yellow" if pct >= 0.75 else "green"
+
+    if budget_type == "tokens":
+        def _fmt(n: int) -> str:
+            return f"{n/1_000_000:.1f}M" if n >= 1_000_000 else f"{n//1_000}k" if n >= 1_000 else str(n)
+        label = f"{_fmt(used)} / {_fmt(limit)}"
+    else:
+        label = f"{used} / {limit} req"
+
+    return Text(label, style=style)
+
+
+def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
+    elapsed = int(time.monotonic() - start_time)
+    h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
+
+    table = Table(
+        title=(
+            f"Labeling Dashboard — {datetime.now().strftime('%H:%M:%S')} "
+            f"— elapsed {h:02d}:{m:02d}:{s:02d}"
+        ),
+        header_style="bold white",
+        border_style="blue",
+        expand=True,
+    )
+    table.add_column("Judge", style="cyan", no_wrap=True, min_width=22)
+    table.add_column("Status", no_wrap=True, min_width=12)
+    table.add_column("Budget used", no_wrap=True, min_width=16)
+    table.add_column("Labeled", justify="right", min_width=7)
+    table.add_column("Errors", justify="right", min_width=6)
+    table.add_column("Last activity", overflow="fold")
+
+    for state in states:
+        log = parse_log(state.meta.logfile)
+        used = read_budget_used(state.meta)
+        labeled = count_labeled(state.meta.suffix)
+
+        err_text = Text(str(log["error_count"]))
+        if log["error_count"] > 0:
+            err_text.stylize("red")
+
+        table.add_row(
+            state.meta.name,
+            _status_text(state, log),
+            _budget_text(used, state.meta.budget_limit, state.meta.budget_type),
+            str(labeled),
+            err_text,
+            log["last_signal"],
+        )
+
+    return table
+
+
+# ── Status subcommand ──────────────────────────────────────────────────────────
+
+def print_status(console: Console, metas: list[JudgeMeta]) -> None:
+    """Print a one-shot status table (like the old 'bash run_all.sh status')."""
+    table = Table(title="Judge Status", header_style="bold white", border_style="blue")
+    table.add_column("Judge", style="cyan", no_wrap=True)
+    table.add_column("Process")
+    table.add_column("Budget used", no_wrap=True)
+    table.add_column("Labeled", justify="right")
+    table.add_column("Errors", justify="right")
+    table.add_column("Last activity", overflow="fold")
+
+    import subprocess as sp
+    for meta in metas:
+        try:
+            result = sp.run(
+                ["pgrep", "-f", f"run.py --config {meta.config_file}"],
+                capture_output=True, text=True,
+            )
+            pid = result.stdout.strip().split("\n")[0] if result.returncode == 0 else None
+        except Exception:
+            pid = None
+
+        proc_text = Text(f"running (pid {pid})", style="green") if pid else Text("stopped", style="dim")
+        log = parse_log(meta.logfile)
+        used = read_budget_used(meta)
+        labeled = count_labeled(meta.suffix)
+
+        err_text = Text(str(log["error_count"]))
+        if log["error_count"] > 0:
+            err_text.stylize("red")
+
+        table.add_row(
+            meta.name,
+            proc_text,
+            _budget_text(used, meta.budget_limit, meta.budget_type),
+            str(labeled),
+            err_text,
+            log["last_signal"],
+        )
+
+    console.print(table)
+
+
+# ── Work order ─────────────────────────────────────────────────────────────────
+
+WORK_ORDER_FILE = HERE / "work_order.json"
+WORK_ORDER_SEED = 42
+
+
+def _count_labeled_for_file(stem: str) -> int:
+    """Count how many judges have any labeled output for the given input file stem."""
+    if not OUTPUT_DIR.exists():
+        return 0
+    return sum(1 for f in OUTPUT_DIR.glob(f"{stem}_*.jsonl") if f.stat().st_size > 0)
+
+
+def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
+    """Generate a shared work order that all judges will follow.
+
+    File ordering (so lagging judges catch up on already-started files first):
+      1. Files where at least one judge has already labeled some entries
+         — sorted by how many judges are ahead, descending
+      2. Files not yet touched by any judge — shuffled randomly
+
+    Within each file, entries are shuffled with a fixed seed so the order is
+    stable across regenerations but not biased toward the start of the file.
+    All entries are included — the work order is the full dataset in smart order.
+    """
+    import random as _rng_mod
+    rng = _rng_mod.Random(seed)
+
+    input_files = sorted(input_dir.glob("*.jsonl"))
+    if not input_files:
+        raise FileNotFoundError(f"No .jsonl files found in {input_dir}")
+
+    # Split into already-started vs untouched, then sort/shuffle each group
+    started = sorted(
+        [f for f in input_files if _count_labeled_for_file(f.stem) > 0],
+        key=lambda f: _count_labeled_for_file(f.stem),
+        reverse=True,
+    )
+    untouched = [f for f in input_files if _count_labeled_for_file(f.stem) == 0]
+    rng.shuffle(untouched)
+    file_order = started + untouched
+
+    per_file: dict[str, list[str]] = {}
+    for fpath in file_order:
+        ids: list[str] = []
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if "id" in data:
+                        ids.append(data["id"])
+                except Exception:
+                    pass
+        rng.shuffle(ids)
+        per_file[fpath.name] = ids  # all entries
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "seed": seed,
+        "total_entries": sum(len(v) for v in per_file.values()),
+        "started_files": len(started),
+        "untouched_files": len(untouched),
+        "file_order": [p.name for p in file_order],
+        "per_file": per_file,
+    }
+    output_path.write_text(json.dumps(payload, indent=2))
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    console = Console()
+
+    # Load config metadata
+    metas: list[JudgeMeta] = []
+    for cfg in CONFIGS:
+        try:
+            metas.append(load_judge_meta(cfg))
+        except Exception as e:
+            console.print(f"[yellow]Warning: skipping {cfg}: {e}[/yellow]")
+
+    if not metas:
+        console.print("[red]No valid configs found.[/red]")
+        sys.exit(1)
+
+    # Status subcommand
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        print_status(console, metas)
+        return
+
+    input_arg = sys.argv[1] if len(sys.argv) > 1 else "../../data/1_generated/"
+    input_dir = (HERE / input_arg).resolve() if not Path(input_arg).is_absolute() else Path(input_arg)
+
+    # Ensure work order exists — generate it if not
+    if not WORK_ORDER_FILE.exists():
+        console.print(
+            f"[bold yellow]Work order not found — generating work_order.json "
+            f"(all entries, seed={WORK_ORDER_SEED})...[/bold yellow]"
+        )
+        try:
+            generate_work_order(input_dir, WORK_ORDER_FILE, WORK_ORDER_SEED)
+            with open(WORK_ORDER_FILE) as f:
+                wo = json.load(f)
+            console.print(
+                f"[green]Generated:[/green] {wo['total_entries']} entries across "
+                f"{len(wo['file_order'])} files "
+                f"({wo['started_files']} already started, {wo['untouched_files']} untouched)\n"
+            )
+        except Exception as e:
+            console.print(f"[red]Failed to generate work order: {e}[/red]")
+            sys.exit(1)
+    else:
+        with open(WORK_ORDER_FILE) as f:
+            wo = json.load(f)
+        console.print(
+            f"[dim]Work order:[/dim] {wo['total_entries']} entries across "
+            f"{len(wo['file_order'])} files — "
+            f"generated {wo['generated_at'][:10]}\n"
+        )
+
+    console.print(f"[bold]Starting {len(metas)} judges on:[/bold] {input_arg}")
+    console.print(f"Logs: run_all_<judge>.log   |   Ctrl+C to stop\n")
+
+    # Launch all judge subprocesses
+    states: list[JudgeState] = []
+    log_handles = []
+    for meta in metas:
+        console.print(f"  Starting [cyan]{meta.name}[/cyan] → {meta.logfile.name}")
+        log_fh = open(meta.logfile, "w")
+        log_handles.append(log_fh)
+        proc = subprocess.Popen(
+            ["uv", "run", "run.py", "--config", meta.config_file, input_arg],
+            cwd=str(HERE),
+            stdout=log_fh,
+            stderr=log_fh,
+        )
+        states.append(JudgeState(meta=meta, proc=proc, _log_fh=log_fh))
+
+    console.print()
+    start_time = time.monotonic()
+
+    try:
+        with Live(console=console, refresh_per_second=0.5, screen=False) as live:
+            while True:
+                for s in states:
+                    s.poll()
+                live.update(build_dashboard(states, start_time))
+
+                if all(not s.running for s in states if s.proc is not None):
+                    time.sleep(1)
+                    for s in states:
+                        s.poll()
+                    live.update(build_dashboard(states, start_time))
+                    break
+
+                time.sleep(2)
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted — sending SIGTERM to all judges...[/yellow]")
+        for state in states:
+            if state.running:
+                state.proc.terminate()
+        console.print("[dim]Checkpoints are saved. Re-run tomorrow to resume.[/dim]")
+    finally:
+        for fh in log_handles:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+    console.print()
+    total = sum(count_labeled(s.meta.suffix) for s in states)
+    console.print(f"[bold green]=== All done ===[/bold green]  total labeled: [green]{total}[/green]")
+
+
+if __name__ == "__main__":
+    main()

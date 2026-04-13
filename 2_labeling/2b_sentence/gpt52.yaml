@@ -1,0 +1,47 @@
+# ── Judge LLM backend ─────────────────────────────────────────────────────────
+judge:
+  name: gpt-5.2-2025-12-11
+  model_id: gpt-5.2-2025-12-11
+  backend: openai
+  api_key_source: openai-api-key
+  temperature: 0.2
+  max_completion_tokens: 8192
+  timeout: 120
+
+# ── Secrets file (relative to this config file) ───────────────────────────────
+secrets_file: "../../.secrets.json"
+
+# ── Prompt template (relative to this config file) ────────────────────────────
+prompt_file: "prompt.md"
+
+# ── Pipeline settings ─────────────────────────────────────────────────────────
+pipeline:
+  max_retries: 3
+  retry_delay: 2.0
+  checkpoint_every: 10
+  max_workers: 4
+  response_sentences: 5
+  skip_no_reasoning: true
+  skip_no_response: false
+  overwrite_existing: false
+  max_reasoning_chars: null
+
+  # ── Daily token budget ──────────────────────────────────────────────────────
+  # Adjust once you know the actual free-tier limit for this model.
+  token_budget: 250000
+  budget_state_file: "gpt52_token_budget.json"
+
+  # ── Shared work order ───────────────────────────────────────────────────────
+  work_order_file: "work_order.json"
+
+# ── Sentence mapping ──────────────────────────────────────────────────────────
+mapper:
+  fuzzy_threshold: 0.85
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+# ── Output ────────────────────────────────────────────────────────────────────
+output:
+  dir: "../../data/2b_labeled"
+  suffix: "_gpt-5.2-2025-12-11"
+  in_place: false
