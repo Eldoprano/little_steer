@@ -13,7 +13,7 @@ A mobile-first web app for manually labeling sentences in LLM reasoning traces. 
 ## Quick start
 
 ```bash
-cd 2_labeling/2b_sentence/human_labeling
+cd 2_labeling/2c_human_labeling
 npm install
 npm run dev
 ```
