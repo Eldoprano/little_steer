@@ -587,6 +587,215 @@ def process_file(
     return labeled, skipped, failed, budget_stopped
 
 
+# ── Breadth-first processor ───────────────────────────────────────────────────
+
+def process_breadth_first(
+    flat_order: list[dict[str, str]],
+    input_dir: Path,
+    output_dir: Path,
+    output_suffix: str,
+    client: openai.OpenAI,
+    judge_cfg: JudgeConfig,
+    prompt_template: str,
+    pipeline_cfg: PipelineConfig,
+    mapper_cfg: MapperConfig,
+    console: Console,
+    progress: Progress,
+    task_id: TaskID,
+    reset_checkpoints: bool = False,
+    token_budget: TokenBudget | None = None,
+    rate_limiter: RequestRateLimiter | None = None,
+    entry_limit: EntryLimit | None = None,
+) -> tuple[int, int, int, int]:
+    """Process entries from a breadth-first flat_order across multiple source files.
+
+    Entries are processed in the interleaved order defined by flat_order, which
+    alternates across all source files (round-robin).  A budget-limited run will
+    therefore label a few entries from every file before going deeper into any one.
+
+    Returns (labeled, skipped, failed, budget_stopped).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect unique source files (preserving appearance order)
+    file_names: list[str] = list(dict.fromkeys(item["file"] for item in flat_order))
+
+    # Per-file output paths, checkpoints, write locks
+    output_paths: dict[str, Path] = {}
+    checkpoints: dict[str, CheckpointManager] = {}
+    done_ids_per_file: dict[str, set[str]] = {}
+    write_locks: dict[str, threading.Lock] = {}
+
+    for fname in file_names:
+        out = output_dir / (Path(fname).stem + output_suffix + ".jsonl")
+        output_paths[fname] = out
+        cp = CheckpointManager(out.with_suffix(".checkpoint.json"))
+        if reset_checkpoints:
+            cp.delete()
+        checkpoints[fname] = cp
+        done_ids_per_file[fname] = cp.load() | _scan_existing_ids(out)
+        write_locks[fname] = threading.Lock()
+
+    # Load all source entries into memory
+    all_entries: dict[str, dict[str, ConversationEntry]] = {}
+    for fname in file_names:
+        fpath = input_dir / fname
+        entries: dict[str, ConversationEntry] = {}
+        if fpath.exists():
+            with open(fpath) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = ConversationEntry.model_validate_json(line)
+                        entries[e.id] = e
+                    except Exception as exc:
+                        console.print(f"[yellow]  Skip malformed line in {fname}: {exc}[/yellow]")
+        all_entries[fname] = entries
+
+    # Filter to entries that still need labeling
+    todo = [
+        item for item in flat_order
+        if item["file"] in all_entries
+        and item["id"] in all_entries[item["file"]]
+        and item["id"] not in done_ids_per_file.get(item["file"], set())
+    ]
+    progress.update(task_id, total=len(todo))
+
+    labeled = skipped = failed = budget_stopped = 0
+    since_checkpoint = 0
+
+    def _process_item(item: dict[str, str]) -> str:
+        fname = item["file"]
+        eid = item["id"]
+        entry = all_entries[fname].get(eid)
+
+        if entry is None or eid in done_ids_per_file.get(fname, set()):
+            return "skipped"
+        if token_budget is not None and not token_budget.can_proceed():
+            return "budget"
+        if rate_limiter is not None and not rate_limiter.can_proceed():
+            return "budget"
+        if entry_limit is not None and not entry_limit.can_proceed():
+            return "budget"
+        if entry.annotations and not pipeline_cfg.overwrite_existing:
+            return "skipped"
+
+        reasoning_idx = _find_reasoning_msg_idx(entry)
+        if reasoning_idx is None:
+            return "skipped"
+        reasoning_text = entry.messages[reasoning_idx]["content"]
+        if not reasoning_text.strip():
+            return "skipped"
+        if pipeline_cfg.max_reasoning_chars is not None:
+            reasoning_text = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
+
+        user_prompt = _find_user_msg(entry)
+        assistant_content = _find_assistant_msg(entry)
+        if assistant_content is None and pipeline_cfg.skip_no_response:
+            return "skipped"
+        response_text = assistant_content or ""
+
+        if token_budget is not None:
+            estimated = len(format_prompt(
+                prompt_template, user_prompt, reasoning_text, response_text,
+                pipeline_cfg.response_sentences,
+            )) // 4
+            max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
+            if not token_budget.can_afford(estimated + max_comp):
+                token_budget.stop_event.set()
+                return "budget"
+
+        if entry_limit is not None and not entry_limit.try_acquire():
+            return "budget"
+        if rate_limiter is not None and not rate_limiter.acquire():
+            return "budget"
+
+        def warn(msg: str) -> None:
+            console.print(f"[dim yellow]{msg}[/dim yellow]")
+
+        try:
+            labeling_output = label_entry(
+                client=client,
+                cfg=judge_cfg,
+                prompt_template=prompt_template,
+                user_prompt=user_prompt,
+                model_reasoning=reasoning_text,
+                model_response=response_text,
+                entry_id=eid,
+                response_sentences=pipeline_cfg.response_sentences,
+                max_retries=pipeline_cfg.max_retries,
+                retry_delay=pipeline_cfg.retry_delay,
+            )
+        except BillingQuotaError:
+            console.print("[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
+            if rate_limiter is not None:
+                rate_limiter.stop_event.set()
+            if token_budget is not None:
+                token_budget.stop_event.set()
+            return "budget"
+        except LabelingError as e:
+            detail = str(e.last_exception) if e.last_exception else e.reason
+            checkpoints[fname].mark_failed(eid, detail)
+            console.print(f"[red]  Failed [{eid[:12]}]: {detail[:120]}[/red]")
+            return "failed"
+
+        if rate_limiter is not None:
+            rate_limiter.record()
+        if token_budget is not None:
+            tokens_used = labeling_output.metadata.get("usage", {}).get("total_tokens", 0)
+            if tokens_used:
+                token_budget.consume(tokens_used)
+
+        updated_entry = apply_labeling_output(
+            entry=entry,
+            output=labeling_output,
+            reasoning_msg_idx=reasoning_idx,
+            judge_name=judge_cfg.name,
+            mapper_cfg=mapper_cfg,
+            warn_fn=warn,
+        )
+
+        with write_locks[fname]:
+            with open(output_paths[fname], "a", encoding="utf-8") as f:
+                f.write(updated_entry.model_dump_json() + "\n")
+            checkpoints[fname].mark_done(eid)
+
+        return "labeled"
+
+    with ThreadPoolExecutor(max_workers=pipeline_cfg.max_workers) as pool:
+        futures = {pool.submit(_process_item, item): item for item in todo}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+            except Exception as exc:
+                item = futures[future]
+                console.print(f"[red]  Unexpected error [{item['id'][:12]}]: {exc}[/red]")
+                result = "failed"
+
+            if result == "labeled":
+                labeled += 1
+                since_checkpoint += 1
+                if since_checkpoint >= pipeline_cfg.checkpoint_every:
+                    for cp in checkpoints.values():
+                        cp.save()
+                    since_checkpoint = 0
+            elif result == "skipped":
+                skipped += 1
+            elif result == "budget":
+                budget_stopped += 1
+            else:
+                failed += 1
+
+            progress.advance(task_id)
+
+    for cp in checkpoints.values():
+        cp.save()
+
+    return labeled, skipped, failed, budget_stopped
+
+
 # ── Top-level orchestrator ────────────────────────────────────────────────────
 
 def resolve_output_path(
@@ -710,6 +919,7 @@ def run_pipeline(
     # When set, it overrides shuffle_files and max_entries_per_file.
     work_order: dict[str, list[str]] | None = None  # filename → [id, ...]
     work_order_file_order: list[Path] | None = None
+    flat_order: list[dict[str, str]] | None = None   # breadth-first interleaved order
 
     if config.pipeline.work_order_file:
         wo_path = config.resolve_path(config_path, config.pipeline.work_order_file)
@@ -717,6 +927,7 @@ def run_pipeline(
             with open(wo_path) as _f:
                 _wo = json.load(_f)
             work_order = _wo.get("per_file", {})
+            flat_order = _wo.get("flat_order")  # present in breadth-first work orders
             # Reconstruct absolute paths in the order the work order specifies
             input_by_name = {p.name: p for p in input_files}
             work_order_file_order = [
@@ -724,11 +935,18 @@ def run_pipeline(
                 for name in _wo.get("file_order", [])
                 if name in input_by_name
             ]
-            console.print(
-                f"[bold]Work order:[/bold] {wo_path.name} — "
-                f"{sum(len(v) for v in work_order.values())} target entries across "
-                f"{len(work_order)} files"
-            )
+            if flat_order:
+                console.print(
+                    f"[bold]Work order (breadth-first):[/bold] {wo_path.name} — "
+                    f"{len(flat_order)} entries across "
+                    f"{len(set(item['file'] for item in flat_order))} files"
+                )
+            else:
+                console.print(
+                    f"[bold]Work order:[/bold] {wo_path.name} — "
+                    f"{sum(len(v) for v in work_order.values())} target entries across "
+                    f"{len(work_order)} files"
+                )
         else:
             console.print(f"[yellow]Work order file not found: {wo_path} — falling back to normal mode[/yellow]")
 
@@ -742,6 +960,75 @@ def run_pipeline(
         input_files = list(input_files)
         day_seed = datetime.now(timezone.utc).date().isoformat()
         random.Random(day_seed).shuffle(input_files)
+
+    # ── Breadth-first mode (flat_order present in work order) ────────────────
+    if flat_order is not None:
+        input_dir = input_files[0].parent if input_files else output_dir
+        n_files = len(set(item["file"] for item in flat_order))
+        console.print(
+            f"[bold]Breadth-first labeling:[/bold] "
+            f"{len(flat_order)} entries across {n_files} files"
+        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task("[cyan]Breadth-first labeling…[/cyan]", total=len(flat_order))
+            labeled, skipped, failed, budget_stopped = process_breadth_first(
+                flat_order=flat_order,
+                input_dir=input_dir,
+                output_dir=output_dir,
+                output_suffix=config.output.suffix,
+                client=client,
+                judge_cfg=effective_judge,
+                prompt_template=prompt_template,
+                pipeline_cfg=config.pipeline,
+                mapper_cfg=config.mapper,
+                console=console,
+                progress=progress,
+                task_id=task_id,
+                reset_checkpoints=reset_checkpoints,
+                token_budget=token_budget,
+                rate_limiter=rate_limiter,
+                entry_limit=entry_limit,
+            )
+
+        total = labeled + skipped + failed + budget_stopped
+        table = Table(title="Breadth-First Labeling Summary", show_lines=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Count", justify="right")
+        table.add_row("Total processed", str(total))
+        table.add_row("Labeled", f"[green]{labeled}[/green]")
+        table.add_row("Skipped (done)", f"[yellow]{skipped}[/yellow]")
+        table.add_row("Failed", f"[red]{failed}[/red]")
+        table.add_row("Budget stopped", f"[magenta]{budget_stopped}[/magenta]")
+        console.print(table)
+
+        if token_budget is not None:
+            console.print(
+                f"[bold]Token budget after run:[/bold] "
+                f"used today: [yellow]{token_budget.tokens_used_today():,}[/yellow] / {token_budget.daily_limit:,} — "
+                f"remaining: [green]{token_budget.remaining():,}[/green]"
+            )
+        if rate_limiter is not None:
+            console.print(
+                f"[bold]Request budget after run:[/bold] "
+                f"used today: [yellow]{rate_limiter.requests_today():,}[/yellow] / {rate_limiter.rpd:,} — "
+                f"remaining: [green]{rate_limiter.remaining_today():,}[/green]"
+            )
+        if _any_limit_exhausted():
+            console.print(
+                "[bold magenta]Daily limit reached. "
+                "Run again tomorrow to continue from where you left off.[/bold magenta]"
+            )
+        return
+
+    # ── Per-file mode (legacy / no flat_order) ────────────────────────────────
 
     # Summary table accumulator
     results: list[tuple[str, int, int, int, int, int]] = []  # name, total, labeled, skipped, failed, budget_stopped
