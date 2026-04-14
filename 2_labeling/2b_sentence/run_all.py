@@ -39,6 +39,22 @@ CONFIGS = [
     "gemini-3.1-flash-lite-preview.yaml",
 ]
 
+# Only process input files whose names contain at least one of these substrings.
+# Set to None (or empty list) to process all files.
+INCLUDE_FILES = [
+    "deepseek-r1-distill-llama-8b_",           # base model
+    "deepseek-r1-distill-llama-8b-self-heretic_",  # self-heretic variant
+    "gemma-4-26b-a4b_",
+    "gemma-4-26b-a4b-heretic_",
+    "gpt-oss-20b_",
+    "gpt-oss-20b-heretic-ara-v3-i1_",
+    "ministral-3-8B-Reasoning-2512_",
+    "ministral-3-8B-Reasoning-2512-self-heretic_",
+    "phi-4-reasoning-14B_",
+    "qwen3.5-9B_",
+    "qwen3.5-9B-heretic-v2_",
+]
+
 # Matches ANSI escape codes and Unicode spinner/box-drawing characters
 _NOISE_RE = re.compile(r"\x1b\[[0-9;]*[mKABCDEFGHJKSTf]|[━─│┌┐└┘├┤┬┴┼╴╵╶╷]")
 _SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
@@ -306,21 +322,28 @@ def _count_labeled_for_file(stem: str) -> int:
 
 
 def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
-    """Generate a shared work order that all judges will follow.
+    """Generate a shared breadth-first work order that all judges will follow.
 
-    File ordering (so lagging judges catch up on already-started files first):
+    Strategy: round-robin interleaving across all files so that with any daily
+    budget, every model/dataset gets roughly equal coverage.
+
+    File ordering within each round:
       1. Files where at least one judge has already labeled some entries
-         — sorted by how many judges are ahead, descending
+         — sorted by how many judges are ahead, descending (catch-up first)
       2. Files not yet touched by any judge — shuffled randomly
 
-    Within each file, entries are shuffled with a fixed seed so the order is
-    stable across regenerations but not biased toward the start of the file.
-    All entries are included — the work order is the full dataset in smart order.
+    Within each file, entries are shuffled with a fixed seed.
+    flat_order is the canonical processing sequence: one entry from file 1,
+    one from file 2, ..., one from file N, then repeat.  This ensures that
+    any budget-limited run labels a few entries from EVERY file before going
+    deeper into any single file.
     """
     import random as _rng_mod
     rng = _rng_mod.Random(seed)
 
     input_files = sorted(input_dir.glob("*.jsonl"))
+    if INCLUDE_FILES:
+        input_files = [f for f in input_files if any(pat in f.name for pat in INCLUDE_FILES)]
     if not input_files:
         raise FileNotFoundError(f"No .jsonl files found in {input_dir}")
 
@@ -334,6 +357,7 @@ def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
     rng.shuffle(untouched)
     file_order = started + untouched
 
+    # Load and shuffle IDs per file
     per_file: dict[str, list[str]] = {}
     for fpath in file_order:
         ids: list[str] = []
@@ -349,16 +373,30 @@ def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
                 except Exception:
                     pass
         rng.shuffle(ids)
-        per_file[fpath.name] = ids  # all entries
+        per_file[fpath.name] = ids
+
+    # Build flat round-robin order across all files
+    # Round 1: entry[0] from file1, entry[0] from file2, ..., entry[0] from fileN
+    # Round 2: entry[1] from file1, entry[1] from file2, ..., entry[1] from fileN
+    # etc.
+    file_names = [f.name for f in file_order]
+    queues: dict[str, list[str]] = {fname: list(ids) for fname, ids in per_file.items()}
+    flat_order: list[dict[str, str]] = []
+    while any(queues[fname] for fname in file_names):
+        for fname in file_names:
+            if queues[fname]:
+                flat_order.append({"file": fname, "id": queues[fname].pop(0)})
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
-        "total_entries": sum(len(v) for v in per_file.values()),
+        "strategy": "breadth_first_round_robin",
+        "total_entries": len(flat_order),
         "started_files": len(started),
         "untouched_files": len(untouched),
-        "file_order": [p.name for p in file_order],
-        "per_file": per_file,
+        "file_order": file_names,
+        "flat_order": flat_order,
+        "per_file": per_file,  # kept for checkpoint compatibility
     }
     output_path.write_text(json.dumps(payload, indent=2))
 
