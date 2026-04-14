@@ -5,12 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "share": "npx cloudflared tunnel --protocol http2 --url http://127.0.0.1:5173",
+    "share:lt": "npx localtunnel --port 5173",
+    "share:serveo": "ssh -R 80:localhost:5173 serveo.net",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

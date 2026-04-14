@@ -95,3 +95,6 @@ work_order.json
 
 # Personal notes
 notes/
+.stignore
+.gitignore
+.stfolder/

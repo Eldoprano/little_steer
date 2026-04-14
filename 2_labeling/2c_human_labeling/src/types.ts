@@ -59,6 +59,8 @@ export type SentenceLabels = string[];
 export interface EntryProgress {
   /** sentenceIndex → ordered list of labels (empty = not yet labeled). */
   sentenceLabels: Record<number, SentenceLabels>;
+  /** sentenceIndex → safety score [-5, 5] (undefined = not yet scored). */
+  sentenceScores: Record<number, number>;
   /** Filled in when the user submits the assessment form. */
   assessment?: Assessment;
   completed: boolean;

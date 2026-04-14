@@ -32,17 +32,21 @@ export default function App() {
 
   const currentEntry = entries[appState.currentEntryIndex] ?? null;
   const currentProgress = currentEntry
-    ? (appState.progress[currentEntry.id] ?? { sentenceLabels: {}, completed: false })
+    ? (appState.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false })
     : null;
   const sentences = currentEntry ? getSentences(currentEntry) : [];
 
   const completedCount = entries.filter((e) => appState.progress[e.id]?.completed).length;
   const allEntriesDone = entries.length > 0 && completedCount === entries.length;
 
-  // Are all sentences in the current entry labeled (but assessment not yet submitted)?
+  // Are all sentences in the current entry labeled AND scored (but assessment not yet submitted)?
   const allSentencesLabeled =
     sentences.length > 0 &&
-    sentences.every((s) => (currentProgress?.sentenceLabels[s.index]?.length ?? 0) > 0) &&
+    sentences.every(
+      (s) =>
+        (currentProgress?.sentenceLabels[s.index]?.length ?? 0) > 0 &&
+        currentProgress?.sentenceScores[s.index] !== undefined,
+    ) &&
     !currentProgress?.completed;
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -62,7 +66,7 @@ export default function App() {
       if (!currentEntry) return;
       const sentIdx = appState.currentSentenceIndex;
       setAppState((prev) => {
-        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, completed: false };
+        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
         return {
           ...prev,
           progress: {
@@ -70,6 +74,27 @@ export default function App() {
             [currentEntry.id]: {
               ...ep,
               sentenceLabels: { ...ep.sentenceLabels, [sentIdx]: labels },
+            },
+          },
+        };
+      });
+    },
+    [currentEntry, appState.currentSentenceIndex],
+  );
+
+  const handleScoreSentence = useCallback(
+    (score: number) => {
+      if (!currentEntry) return;
+      const sentIdx = appState.currentSentenceIndex;
+      setAppState((prev) => {
+        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+        return {
+          ...prev,
+          progress: {
+            ...prev.progress,
+            [currentEntry.id]: {
+              ...ep,
+              sentenceScores: { ...(ep.sentenceScores ?? {}), [sentIdx]: score },
             },
           },
         };
@@ -160,7 +185,9 @@ export default function App() {
             completedCount={completedCount}
             sentenceIndex={appState.currentSentenceIndex}
             sentenceLabels={currentProgress?.sentenceLabels ?? {}}
+            sentenceScores={currentProgress?.sentenceScores ?? {}}
             onLabelSentence={handleLabelSentence}
+            onScoreSentence={handleScoreSentence}
             onNavigate={handleNavigate}
             onJumpToSentence={handleJump}
             onShowAssessment={() => setScreen('assessment')}
@@ -239,7 +266,9 @@ export default function App() {
       completedCount={completedCount}
       sentenceIndex={appState.currentSentenceIndex}
       sentenceLabels={currentProgress?.sentenceLabels ?? {}}
+      sentenceScores={currentProgress?.sentenceScores ?? {}}
       onLabelSentence={handleLabelSentence}
+      onScoreSentence={handleScoreSentence}
       onNavigate={handleNavigate}
       onJumpToSentence={handleJump}
       onShowAssessment={() => setScreen('assessment')}
@@ -270,7 +299,7 @@ function AllDoneScreen({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        background: '#0f172a',
+        background: '#2D353B',
         gap: '24px',
         padding: '32px',
         userSelect: 'none',
@@ -278,11 +307,10 @@ function AllDoneScreen({
       }}
     >
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '52px', marginBottom: '12px' }}>🎉</div>
-        <h1 style={{ color: '#f1f5f9', fontSize: '22px', fontWeight: 800, margin: 0 }}>
+        <h1 style={{ color: '#D3C6AA', fontSize: '22px', fontWeight: 800, margin: 0 }}>
           All {total} responses labeled!
         </h1>
-        <p style={{ color: '#64748b', fontSize: '14px', marginTop: '8px' }}>
+        <p style={{ color: '#7A8478', fontSize: '14px', marginTop: '8px' }}>
           Great work. Export your labels or load more files to continue.
         </p>
       </div>
@@ -300,10 +328,10 @@ function AllDoneScreen({
           onClick={onShowStats}
           style={{
             minHeight: '52px',
-            background: '#4f46e5',
+            background: '#A7C080',
             border: 'none',
             borderRadius: '12px',
-            color: '#fff',
+            color: '#2D353B',
             fontSize: '15px',
             fontWeight: 700,
             cursor: 'pointer',
@@ -316,10 +344,10 @@ function AllDoneScreen({
         <label
           style={{
             minHeight: '52px',
-            background: '#1e293b',
-            border: '1px solid #334155',
+            background: '#343F44',
+            border: '1px solid #475258',
             borderRadius: '12px',
-            color: '#94a3b8',
+            color: '#9DA9A0',
             fontSize: '14px',
             cursor: 'pointer',
             display: 'flex',

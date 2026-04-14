@@ -1,4 +1,4 @@
-/* ── Reset & base ────────────────────────────────────────────────────────── */
+/* ── Reset & base (Everforest Dark Medium) ───────────────────────────────── */
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -17,8 +17,8 @@
 html, body {
   height: 100%;
   overflow: hidden;
-  background: #0f172a;
-  color: #f1f5f9;
+  background: #2D353B;
+  color: #D3C6AA;
   font-family:
     -apple-system,
     BlinkMacSystemFont,
@@ -48,12 +48,12 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #475258;
   border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #4F585E;
 }
 
 /* ── Utility classes ─────────────────────────────────────────────────────── */
@@ -62,7 +62,7 @@ html, body {
   display: block;
   font-size: 10px;
   font-weight: 700;
-  color: #475569;
+  color: #7A8478;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin-bottom: 6px;
@@ -71,7 +71,7 @@ html, body {
 /* ── Focus styles (keyboard nav) ─────────────────────────────────────────── */
 
 button:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid #A7C080;
   outline-offset: 2px;
 }
 

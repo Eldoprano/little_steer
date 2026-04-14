@@ -44,22 +44,22 @@ function DescTooltip({ text, onClose }: { text: string; onClose: () => void }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(0,0,0,0.75)',
+        background: 'rgba(35,42,46,0.85)',
         padding: '24px',
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: '#1e293b',
-          border: '1px solid #334155',
+          background: '#343F44',
+          border: '1px solid #475258',
           borderRadius: '16px',
           padding: '20px 22px',
           maxWidth: '440px',
-          color: '#e2e8f0',
+          color: '#D3C6AA',
           fontSize: '13px',
           lineHeight: '1.65',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
           whiteSpace: 'pre-wrap',
         }}
       >
@@ -69,10 +69,10 @@ function DescTooltip({ text, onClose }: { text: string; onClose: () => void }) {
           style={{
             minHeight: '44px',
             padding: '0 20px',
-            background: '#334155',
+            background: '#475258',
             border: 'none',
             borderRadius: '8px',
-            color: '#f1f5f9',
+            color: '#D3C6AA',
             fontSize: '13px',
             cursor: 'pointer',
           }}
@@ -108,10 +108,10 @@ function OptionButton<T extends string>({
       style={{
         minHeight: '44px',
         padding: '8px 16px',
-        background: selected ? '#4f46e5' : '#1e293b',
-        border: `1.5px solid ${selected ? '#6366f1' : '#334155'}`,
+        background: selected ? '#A7C080' : '#343F44',
+        border: `1.5px solid ${selected ? '#A7C080' : '#475258'}`,
         borderRadius: '10px',
-        color: selected ? '#fff' : '#94a3b8',
+        color: selected ? '#2D353B' : '#9DA9A0',
         fontSize: '13px',
         fontWeight: selected ? 700 : 400,
         cursor: 'pointer',
@@ -128,8 +128,8 @@ function OptionButton<T extends string>({
           width: '16px',
           height: '16px',
           borderRadius: '50%',
-          border: `2px solid ${selected ? '#a5b4fc' : '#475569'}`,
-          background: selected ? '#a5b4fc' : 'transparent',
+          border: `2px solid ${selected ? '#2D353B' : '#7A8478'}`,
+          background: selected ? '#2D353B' : 'transparent',
           flexShrink: 0,
         }}
       />
@@ -159,10 +159,10 @@ function TurningPointPicker({
         style={{
           minHeight: '44px',
           padding: '8px 12px',
-          background: value === -1 ? '#1e293b' : '#0f172a',
-          border: `1.5px solid ${value === -1 ? '#64748b' : '#1e293b'}`,
+          background: value === -1 ? '#343F44' : '#232A2E',
+          border: `1.5px solid ${value === -1 ? '#7A8478' : '#343F44'}`,
           borderRadius: '8px',
-          color: value === -1 ? '#f1f5f9' : '#475569',
+          color: value === -1 ? '#D3C6AA' : '#7A8478',
           fontSize: '12px',
           fontWeight: value === -1 ? 600 : 400,
           cursor: 'pointer',
@@ -184,10 +184,10 @@ function TurningPointPicker({
           style={{
             minHeight: '44px',
             padding: '7px 12px',
-            background: value === s.index ? '#1e3a5f' : '#0f172a',
-            border: `1.5px solid ${value === s.index ? '#3b82f6' : '#1e293b'}`,
+            background: value === s.index ? '#2D3B3B' : '#232A2E',
+            border: `1.5px solid ${value === s.index ? '#7FBBB3' : '#343F44'}`,
             borderRadius: '8px',
-            color: value === s.index ? '#93c5fd' : '#475569',
+            color: value === s.index ? '#7FBBB3' : '#7A8478',
             fontSize: '12px',
             cursor: 'pointer',
             textAlign: 'left' as const,
@@ -200,8 +200,8 @@ function TurningPointPicker({
         >
           <span
             style={{
-              background: value === s.index ? '#3b82f6' : '#1e293b',
-              color: value === s.index ? '#fff' : '#64748b',
+              background: value === s.index ? '#7FBBB3' : '#343F44',
+              color: value === s.index ? '#232A2E' : '#7A8478',
               borderRadius: '4px',
               padding: '1px 5px',
               fontSize: '10px',
@@ -252,7 +252,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
         height: '100dvh',
         display: 'flex',
         flexDirection: 'column',
-        background: '#0f172a',
+        background: '#2D353B',
         overflow: 'hidden',
         userSelect: 'none',
         WebkitUserSelect: 'none',
@@ -264,7 +264,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           display: 'flex',
           alignItems: 'center',
           padding: '8px 14px',
-          borderBottom: '1px solid #1e293b',
+          borderBottom: '1px solid #3D484D',
           flexShrink: 0,
           minHeight: '48px',
           gap: '12px',
@@ -277,7 +277,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
             minWidth: '44px',
             background: 'transparent',
             border: 'none',
-            color: '#64748b',
+            color: '#7A8478',
             fontSize: '20px',
             cursor: 'pointer',
             display: 'flex',
@@ -289,10 +289,10 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           ←
         </button>
         <div>
-          <div style={{ color: '#f1f5f9', fontSize: '14px', fontWeight: 700 }}>
+          <div style={{ color: '#D3C6AA', fontSize: '14px', fontWeight: 700 }}>
             Overall Assessment
           </div>
-          <div style={{ color: '#64748b', fontSize: '11px', marginTop: '1px' }}>
+          <div style={{ color: '#7A8478', fontSize: '11px', marginTop: '1px' }}>
             All sentences labeled · complete the assessment to submit
           </div>
         </div>
@@ -313,7 +313,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           style={{
             display: 'flex',
             flexDirection: 'column',
-            borderRight: '1px solid #1e293b',
+            borderRight: '1px solid #3D484D',
             overflowY: 'auto',
             padding: '12px',
             gap: '10px',
@@ -321,9 +321,9 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
         >
           {/* Trajectory */}
           <div>
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#9DA9A0', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
               Reasoning Trajectory
-              <span style={{ fontSize: '10px', color: '#475569', marginLeft: '6px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+              <span style={{ fontSize: '10px', color: '#7A8478', marginLeft: '6px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
                 (long-press for description)
               </span>
             </div>
@@ -342,9 +342,9 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
 
           {/* Alignment */}
           <div>
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', marginTop: '4px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#9DA9A0', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', marginTop: '4px' }}>
               Output Alignment
-              <span style={{ fontSize: '10px', color: '#475569', marginLeft: '6px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+              <span style={{ fontSize: '10px', color: '#7A8478', marginLeft: '6px', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
                 (long-press for description)
               </span>
             </div>
@@ -374,16 +374,16 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           <div
             style={{
               padding: '12px 12px 6px',
-              borderBottom: '1px solid #1e293b',
+              borderBottom: '1px solid #3D484D',
               flexShrink: 0,
             }}
           >
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#9DA9A0', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
               Turning Point
             </div>
-            <div style={{ fontSize: '11px', color: '#475569', marginTop: '4px', lineHeight: '1.4' }}>
+            <div style={{ fontSize: '11px', color: '#7A8478', marginTop: '4px', lineHeight: '1.4' }}>
               Which sentence is where the model commits to its final course of action?
-              Select <strong style={{ color: '#64748b' }}>−1</strong> if there is no clear turning point.
+              Select <strong style={{ color: '#859289' }}>−1</strong> if there is no clear turning point.
             </div>
           </div>
           <div
@@ -408,7 +408,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
         style={{
           flexShrink: 0,
           padding: '10px 14px',
-          borderTop: '1px solid #1e293b',
+          borderTop: '1px solid #3D484D',
           display: 'flex',
           gap: '8px',
         }}
@@ -418,10 +418,10 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           style={{
             flex: 1,
             minHeight: '48px',
-            background: '#1e293b',
-            border: '1px solid #334155',
+            background: '#343F44',
+            border: '1px solid #475258',
             borderRadius: '12px',
-            color: '#94a3b8',
+            color: '#9DA9A0',
             fontSize: '14px',
             cursor: 'pointer',
             WebkitTapHighlightColor: 'transparent',
@@ -435,10 +435,10 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
           style={{
             flex: 3,
             minHeight: '48px',
-            background: canSubmit ? '#4f46e5' : '#1a1f2e',
-            border: `1px solid ${canSubmit ? '#6366f1' : '#334155'}`,
+            background: canSubmit ? '#A7C080' : '#343F44',
+            border: `1px solid ${canSubmit ? '#A7C080' : '#475258'}`,
             borderRadius: '12px',
-            color: canSubmit ? '#fff' : '#334155',
+            color: canSubmit ? '#2D353B' : '#475258',
             fontSize: '14px',
             fontWeight: 700,
             cursor: canSubmit ? 'pointer' : 'not-allowed',

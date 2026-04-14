@@ -1,7 +1,7 @@
 import type { ConversationEntry } from '../types';
 import type { PersistedState } from '../types';
 import { exportAsJsonl } from '../store';
-import { LABEL_GROUPS, getLabelGroup, LABEL_DISPLAY_NAMES } from '../taxonomy';
+import { getLabelGroup, LABEL_DISPLAY_NAMES } from '../taxonomy';
 
 interface Props {
   entries: ConversationEntry[];
@@ -74,7 +74,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
         position: 'fixed',
         inset: 0,
         zIndex: 150,
-        background: 'rgba(0,0,0,0.85)',
+        background: 'rgba(35,42,46,0.9)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -83,8 +83,8 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
     >
       <div
         style={{
-          background: '#0f172a',
-          border: '1px solid #1e293b',
+          background: '#2D353B',
+          border: '1px solid #3D484D',
           borderRadius: '20px',
           width: '100%',
           maxWidth: '560px',
@@ -92,7 +92,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
+          boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
           userSelect: 'none',
           WebkitUserSelect: 'none',
         }}
@@ -104,11 +104,11 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             alignItems: 'center',
             justifyContent: 'space-between',
             padding: '14px 16px',
-            borderBottom: '1px solid #1e293b',
+            borderBottom: '1px solid #3D484D',
             flexShrink: 0,
           }}
         >
-          <span style={{ color: '#f1f5f9', fontSize: '16px', fontWeight: 700 }}>
+          <span style={{ color: '#D3C6AA', fontSize: '16px', fontWeight: 700 }}>
             Labeling Stats
           </span>
           <button
@@ -118,7 +118,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
               minWidth: '44px',
               background: 'transparent',
               border: 'none',
-              color: '#64748b',
+              color: '#7A8478',
               fontSize: '22px',
               cursor: 'pointer',
               display: 'flex',
@@ -143,14 +143,14 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             }}
           >
             {[
-              { label: 'Total', value: total, color: '#94a3b8' },
-              { label: 'Completed', value: completed, color: '#22c55e' },
-              { label: 'In Progress', value: inProgress, color: '#f59e0b' },
+              { label: 'Total', value: total, color: '#9DA9A0' },
+              { label: 'Completed', value: completed, color: '#A7C080' },
+              { label: 'In Progress', value: inProgress, color: '#DBBC7F' },
             ].map((stat) => (
               <div
                 key={stat.label}
                 style={{
-                  background: '#1e293b',
+                  background: '#343F44',
                   borderRadius: '12px',
                   padding: '12px',
                   textAlign: 'center',
@@ -159,7 +159,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 <div style={{ fontSize: '24px', fontWeight: 800, color: stat.color }}>
                   {stat.value}
                 </div>
-                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                <div style={{ fontSize: '11px', color: '#7A8478', marginTop: '2px' }}>
                   {stat.label}
                 </div>
               </div>
@@ -173,7 +173,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 display: 'flex',
                 justifyContent: 'space-between',
                 fontSize: '11px',
-                color: '#64748b',
+                color: '#7A8478',
                 marginBottom: '6px',
               }}
             >
@@ -183,7 +183,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             <div
               style={{
                 height: '8px',
-                background: '#1e293b',
+                background: '#343F44',
                 borderRadius: '4px',
                 overflow: 'hidden',
               }}
@@ -192,7 +192,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 style={{
                   width: `${total > 0 ? (completed / total) * 100 : 0}%`,
                   height: '100%',
-                  background: '#22c55e',
+                  background: '#A7C080',
                   borderRadius: '4px',
                   transition: 'width 0.3s',
                 }}
@@ -207,7 +207,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 style={{
                   fontSize: '11px',
                   fontWeight: 700,
-                  color: '#475569',
+                  color: '#7A8478',
                   textTransform: 'uppercase',
                   letterSpacing: '0.08em',
                   marginBottom: '10px',
@@ -239,7 +239,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                         style={{
                           flex: 1,
                           height: '8px',
-                          background: '#1e293b',
+                          background: '#343F44',
                           borderRadius: '4px',
                           overflow: 'hidden',
                         }}
@@ -253,7 +253,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                           }}
                         />
                       </div>
-                      <span style={{ fontSize: '11px', color: '#64748b', minWidth: '24px', textAlign: 'right' }}>
+                      <span style={{ fontSize: '11px', color: '#7A8478', minWidth: '24px', textAlign: 'right' }}>
                         {count}
                       </span>
                     </div>
@@ -269,7 +269,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
               style={{
                 fontSize: '11px',
                 fontWeight: 700,
-                color: '#475569',
+                color: '#7A8478',
                 textTransform: 'uppercase',
                 letterSpacing: '0.08em',
                 marginBottom: '8px',
@@ -292,9 +292,9 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                       alignItems: 'center',
                       gap: '8px',
                       padding: '7px 10px',
-                      background: isCurrent ? '#1e293b' : '#0f172a',
+                      background: isCurrent ? '#343F44' : '#2D353B',
                       borderRadius: '8px',
-                      border: `1px solid ${isCurrent ? '#334155' : '#1e293b'}`,
+                      border: `1px solid ${isCurrent ? '#475258' : '#3D484D'}`,
                     }}
                   >
                     <span
@@ -302,7 +302,8 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                         width: '20px',
                         height: '20px',
                         borderRadius: '50%',
-                        background: done ? '#15803d' : started ? '#92400e' : '#1e293b',
+                        background: done ? '#A7C080' : started ? '#DBBC7F' : '#343F44',
+                        color: done || started ? '#2D353B' : '#7A8478',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -312,13 +313,13 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                     >
                       {done ? '✓' : started ? '…' : ''}
                     </span>
-                    <span style={{ fontSize: '11px', color: '#64748b', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontSize: '11px', color: '#7A8478', whiteSpace: 'nowrap' }}>
                       {i + 1}.
                     </span>
                     <span
                       style={{
                         fontSize: '11px',
-                        color: isCurrent ? '#f1f5f9' : '#94a3b8',
+                        color: isCurrent ? '#D3C6AA' : '#9DA9A0',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
@@ -328,7 +329,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                       {e.model || e.id.slice(0, 12)}
                     </span>
                     {isCurrent && (
-                      <span style={{ fontSize: '9px', color: '#6366f1', fontWeight: 700, textTransform: 'uppercase' }}>
+                      <span style={{ fontSize: '9px', color: '#A7C080', fontWeight: 700, textTransform: 'uppercase' }}>
                         current
                       </span>
                     )}
@@ -343,7 +344,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
         <div
           style={{
             padding: '12px 16px',
-            borderTop: '1px solid #1e293b',
+            borderTop: '1px solid #3D484D',
             display: 'flex',
             flexDirection: 'column',
             gap: '8px',
@@ -354,10 +355,10 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             onClick={handleExport}
             style={{
               minHeight: '48px',
-              background: '#4f46e5',
+              background: '#A7C080',
               border: 'none',
               borderRadius: '10px',
-              color: '#fff',
+              color: '#2D353B',
               fontSize: '14px',
               fontWeight: 700,
               cursor: 'pointer',
@@ -373,10 +374,10 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
               style={{
                 flex: 1,
                 minHeight: '44px',
-                background: '#1e293b',
-                border: '1px solid #334155',
+                background: '#343F44',
+                border: '1px solid #475258',
                 borderRadius: '10px',
-                color: '#94a3b8',
+                color: '#9DA9A0',
                 fontSize: '12px',
                 cursor: 'pointer',
                 WebkitTapHighlightColor: 'transparent',
@@ -393,10 +394,10 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
               style={{
                 flex: 1,
                 minHeight: '44px',
-                background: '#3b1212',
-                border: '1px solid #ef4444',
+                background: '#3B2D2E',
+                border: '1px solid #E67E80',
                 borderRadius: '10px',
-                color: '#fca5a5',
+                color: '#E67E80',
                 fontSize: '12px',
                 cursor: 'pointer',
                 WebkitTapHighlightColor: 'transparent',
@@ -415,9 +416,9 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             style={{
               minHeight: '44px',
               background: 'transparent',
-              border: '1px solid #1e293b',
+              border: '1px solid #3D484D',
               borderRadius: '10px',
-              color: '#475569',
+              color: '#7A8478',
               fontSize: '12px',
               cursor: 'pointer',
               WebkitTapHighlightColor: 'transparent',
