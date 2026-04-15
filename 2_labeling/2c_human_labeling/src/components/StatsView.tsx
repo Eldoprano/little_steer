@@ -36,10 +36,10 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
     const prog = state.progress[entry.id];
     if (!prog?.completed) continue;
     for (const labels of Object.values(prog.sentenceLabels)) {
-      for (const lbl of labels) {
-        if (lbl !== 'NONE') {
-          labelCounts[lbl] = (labelCounts[lbl] ?? 0) + 1;
-        }
+      // Empty labels = human explicitly found no matching behavior → count as "none"
+      const effective = labels.length === 0 ? ['none'] : labels;
+      for (const lbl of effective) {
+        labelCounts[lbl] = (labelCounts[lbl] ?? 0) + 1;
       }
     }
   }

@@ -176,13 +176,9 @@ export function buildHumanLabeledEntry(
   const sentences = getSentences(original);
 
   const annotations = sentences.map((s) => {
-    const labels = sentenceLabels[s.index];
-    // Map NONE selection → VII_NEUTRAL_FILLER (schema requires non-empty labels)
-    const resolvedLabels =
-      labels && labels.length > 0 && labels[0] !== 'NONE'
-        ? labels
-        : ['VII_NEUTRAL_FILLER'];
-    const isNone = !labels || labels.length === 0 || labels[0] === 'NONE';
+    const labels = sentenceLabels[s.index] ?? [];
+    // Empty labels = human explicitly found no matching behavior
+    const resolvedLabels = labels.length === 0 ? ['none'] : labels;
     const safetyScore = sentenceScores[s.index] ?? 0;
     return {
       text: s.text,
@@ -191,7 +187,7 @@ export function buildHumanLabeledEntry(
       char_end: s.char_end,
       labels: resolvedLabels,
       score: safetyScore,
-      meta: isNone ? { human_none: true } : {},
+      meta: {},
     };
   });
 

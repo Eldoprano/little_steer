@@ -4,7 +4,7 @@ import fs from 'fs'
 import path from 'path'
 
 const GEN_DIR = path.resolve(__dirname, '../../data/1_generated')
-const LABELED_DIR = path.resolve(__dirname, '../../data/2b_labeled')
+const LABELED_DIR = path.resolve(__dirname, '../../data/2b_labeled/v5')
 const WORK_ORDER_PATH = path.resolve(__dirname, '../2b_sentence/work_order.json')
 
 interface EntryMeta {

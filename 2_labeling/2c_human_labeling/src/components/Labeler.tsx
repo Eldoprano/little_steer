@@ -705,10 +705,9 @@ export default function Labeler({
   const currentLabels: string[] = sentenceLabels[sentenceIndex] ?? [];
   const currentScore: number | undefined = sentenceScores[sentenceIndex];
 
-  const labeledCount = Object.values(sentenceLabels).filter((l) => l.length > 0).length;
-  const hasLabel = currentLabels.length > 0;
+  const labeledCount = Object.keys(sentenceScores).length;
   const hasScore = currentScore !== undefined;
-  const canAdvance = hasLabel && hasScore;
+  const canAdvance = hasScore;
 
   const handleToggle = useCallback(
     (label: string) => {

@@ -39,12 +39,12 @@ export default function App() {
   const completedCount = entries.filter((e) => appState.progress[e.id]?.completed).length;
   const allEntriesDone = entries.length > 0 && completedCount === entries.length;
 
-  // Are all sentences in the current entry labeled AND scored (but assessment not yet submitted)?
+  // Are all sentences in the current entry visited (label committed, even if empty) AND scored?
   const allSentencesLabeled =
     sentences.length > 0 &&
     sentences.every(
       (s) =>
-        (currentProgress?.sentenceLabels[s.index]?.length ?? 0) > 0 &&
+        currentProgress?.sentenceLabels[s.index] !== undefined &&
         currentProgress?.sentenceScores[s.index] !== undefined,
     ) &&
     !currentProgress?.completed;
@@ -105,16 +105,34 @@ export default function App() {
 
   const handleNavigate = useCallback(
     (direction: 'back' | 'next') => {
+      if (!currentEntry) return;
       setAppState((prev) => {
         const idx = prev.currentSentenceIndex;
         const nextIdx =
           direction === 'back'
             ? Math.max(0, idx - 1)
             : Math.min(sentences.length - 1, idx + 1);
+        // When advancing forward, commit empty labels if this sentence was never labeled.
+        if (direction === 'next') {
+          const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+          if (ep.sentenceLabels[idx] === undefined) {
+            return {
+              ...prev,
+              currentSentenceIndex: nextIdx,
+              progress: {
+                ...prev.progress,
+                [currentEntry.id]: {
+                  ...ep,
+                  sentenceLabels: { ...ep.sentenceLabels, [idx]: [] },
+                },
+              },
+            };
+          }
+        }
         return { ...prev, currentSentenceIndex: nextIdx };
       });
     },
-    [sentences.length],
+    [sentences.length, currentEntry],
   );
 
   const handleJump = useCallback((idx: number) => {

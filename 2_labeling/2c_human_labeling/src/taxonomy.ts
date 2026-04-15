@@ -54,7 +54,10 @@ for (const [gid, g] of Object.entries(LABEL_GROUPS)) {
   for (const lbl of g.labels) LABEL_TO_GROUP[lbl] = gid;
 }
 
-const _fallbackGroupId = taxonomyData.groups[taxonomyData.groups.length - 1].id;
+// Fallback is the last non-synthetic group
+const _fallbackGroupId = [...taxonomyData.groups]
+  .reverse()
+  .find((g) => !(g as any).synthetic)!.id;
 
 export function getLabelGroup(label: string): GroupInfo {
   const gid = LABEL_TO_GROUP[label] ?? _fallbackGroupId;
