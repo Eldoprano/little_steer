@@ -32,6 +32,7 @@ from thesis_schema import AnnotatedSpan, ConversationEntry
 from .labeler import BillingQuotaError, LabelingError, build_client, format_prompt, label_entry, load_secrets
 from .mapper import map_sentences_to_spans
 from .schema import JudgeConfig, LabelerConfig, LabelingOutput, MapperConfig, PipelineConfig
+from .taxonomy_loader import inject_taxonomy
 
 
 # ── Token budget ──────────────────────────────────────────────────────────────
@@ -335,6 +336,7 @@ def apply_labeling_output(
     judge_name: str,
     mapper_cfg: MapperConfig,
     warn_fn: callable | None = None,
+    taxonomy_version: str = "",
 ) -> ConversationEntry:
     """Return a new ConversationEntry with annotations and assessment filled in."""
     reasoning_text = entry.messages[reasoning_msg_idx]["content"]
@@ -355,6 +357,8 @@ def apply_labeling_output(
     }
     new_metadata["judge_name"] = judge_name
     new_metadata["labeled_at"] = datetime.now(timezone.utc).isoformat()
+    if taxonomy_version:
+        new_metadata["taxonomy_version"] = taxonomy_version
 
     return ConversationEntry(
         id=entry.id,
@@ -385,6 +389,7 @@ def process_file(
     entry_limit: EntryLimit | None = None,
     per_file_max: int | None = None,
     allowed_ids: list[str] | None = None,
+    taxonomy_version: str = "",
 ) -> tuple[int, int, int, int]:
     """Process one JSONL file.
 
@@ -545,6 +550,7 @@ def process_file(
             judge_name=judge_cfg.name,
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
+            taxonomy_version=taxonomy_version,
         )
 
         # Write to output (serialized)
@@ -606,6 +612,7 @@ def process_breadth_first(
     token_budget: TokenBudget | None = None,
     rate_limiter: RequestRateLimiter | None = None,
     entry_limit: EntryLimit | None = None,
+    taxonomy_version: str = "",
 ) -> tuple[int, int, int, int]:
     """Process entries from a breadth-first flat_order across multiple source files.
 
@@ -755,6 +762,7 @@ def process_breadth_first(
             judge_name=judge_cfg.name,
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
+            taxonomy_version=taxonomy_version,
         )
 
         with write_locks[fname]:
@@ -838,6 +846,8 @@ def run_pipeline(
     secrets_path = config.resolve_path(config_path, config.secrets_file)
     prompt_path = config.resolve_path(config_path, config.prompt_file)
     output_dir = output_dir_override or config.resolve_path(config_path, config.output.dir)
+    if not output_dir_override and config.output.taxonomy_version:
+        output_dir = output_dir / config.output.taxonomy_version
 
     effective_judge = judge_cfg or config.judges[0]
 
@@ -861,7 +871,7 @@ def run_pipeline(
     client = build_client(effective_judge, secrets)
 
     # Load prompt template
-    prompt_template = prompt_path.read_text(encoding="utf-8")
+    prompt_template = inject_taxonomy(prompt_path.read_text(encoding="utf-8"))
 
     # Set up token budget (daily token limit for OpenAI-style billing)
     token_budget: TokenBudget | None = None
@@ -996,6 +1006,7 @@ def run_pipeline(
                 token_budget=token_budget,
                 rate_limiter=rate_limiter,
                 entry_limit=entry_limit,
+                taxonomy_version=config.output.taxonomy_version,
             )
 
         total = labeled + skipped + failed + budget_stopped
@@ -1074,6 +1085,7 @@ def run_pipeline(
                 entry_limit=entry_limit,
                 per_file_max=None if work_order else config.pipeline.max_entries_per_file,
                 allowed_ids=work_order.get(input_path.name) if work_order else None,
+                taxonomy_version=config.output.taxonomy_version,
             )
 
             total = labeled + skipped + failed + budget_stopped

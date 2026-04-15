@@ -224,6 +224,10 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
     cors: true,
+    fs: {
+      // Allow imports from the shared 2_labeling/ directory (e.g. taxonomy.json)
+      allow: [path.resolve(__dirname, '../../')],
+    },
     // Disable HMR WebSocket to prevent page reloads through Cloudflare tunnel
     hmr: false,
     watch: {

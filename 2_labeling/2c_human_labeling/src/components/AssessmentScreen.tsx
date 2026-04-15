@@ -230,10 +230,10 @@ interface Props {
   onSubmit: (assessment: Assessment) => void;
   onBack: () => void;
 }
-
+// TODO: This looks fishy, and also, hardcoded behaviour
 export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: Props) {
   const [trajectory, setTrajectory] = useState<TrajectoryType>(
-    existing?.trajectory ?? 'mixed_inconclusive',
+    existing?.trajectory ?? 'comply_no_deliberation',
   );
   const [turningPoint, setTurningPoint] = useState<number>(existing?.turning_point ?? -1);
   const [alignment, setAlignment] = useState<AlignmentType>(existing?.alignment ?? 'aligned');

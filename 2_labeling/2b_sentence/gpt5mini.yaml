@@ -48,3 +48,4 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gpt-5.4-mini"
   in_place: false
+  taxonomy_version: "v5"

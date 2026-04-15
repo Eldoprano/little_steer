@@ -37,3 +37,4 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gemini-2.5-flash-lite"
   in_place: false
+  taxonomy_version: "v5"

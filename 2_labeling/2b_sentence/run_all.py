@@ -77,6 +77,7 @@ class JudgeMeta:
     budget_limit: int
     budget_state_file: Path
     logfile: Path
+    taxonomy_version: str = ""  # e.g. "v5"; output is scoped to {OUTPUT_DIR}/{taxonomy_version}/
 
 
 def load_judge_meta(config_name: str) -> JudgeMeta:
@@ -86,7 +87,9 @@ def load_judge_meta(config_name: str) -> JudgeMeta:
 
     judge = data.get("judge") or {}
     name = judge.get("name", config_name.replace(".yaml", ""))
-    suffix = (data.get("output") or {}).get("suffix", f"_{name}")
+    output = data.get("output") or {}
+    suffix = output.get("suffix", f"_{name}")
+    taxonomy_version = output.get("taxonomy_version", "")
     pipeline = data.get("pipeline") or {}
 
     if pipeline.get("token_budget") is not None:
@@ -106,6 +109,7 @@ def load_judge_meta(config_name: str) -> JudgeMeta:
         budget_limit=budget_limit,
         budget_state_file=(config_path.parent / state_file).resolve(),
         logfile=HERE / f"run_all_{config_name.replace('.yaml', '')}.log",
+        taxonomy_version=taxonomy_version,
     )
 
 
@@ -122,11 +126,12 @@ def read_budget_used(meta: JudgeMeta) -> int:
         return 0
 
 
-def count_labeled(suffix: str) -> int:
-    if not OUTPUT_DIR.exists():
+def count_labeled(suffix: str, taxonomy_version: str = "") -> int:
+    base = OUTPUT_DIR / taxonomy_version if taxonomy_version else OUTPUT_DIR
+    if not base.exists():
         return 0
     total = 0
-    for f in OUTPUT_DIR.glob(f"*{suffix}.jsonl"):
+    for f in base.glob(f"*{suffix}.jsonl"):
         try:
             total += sum(1 for _ in open(f))
         except Exception:
@@ -246,7 +251,7 @@ def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
     for state in states:
         log = parse_log(state.meta.logfile)
         used = read_budget_used(state.meta)
-        labeled = count_labeled(state.meta.suffix)
+        labeled = count_labeled(state.meta.suffix, state.meta.taxonomy_version)
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -290,7 +295,7 @@ def print_status(console: Console, metas: list[JudgeMeta]) -> None:
         proc_text = Text(f"running (pid {pid})", style="green") if pid else Text("stopped", style="dim")
         log = parse_log(meta.logfile)
         used = read_budget_used(meta)
-        labeled = count_labeled(meta.suffix)
+        labeled = count_labeled(meta.suffix, meta.taxonomy_version)
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -504,7 +509,7 @@ def main() -> None:
                 pass
 
     console.print()
-    total = sum(count_labeled(s.meta.suffix) for s in states)
+    total = sum(count_labeled(s.meta.suffix, s.meta.taxonomy_version) for s in states)
     console.print(f"[bold green]=== All done ===[/bold green]  total labeled: [green]{total}[/green]")
 
 

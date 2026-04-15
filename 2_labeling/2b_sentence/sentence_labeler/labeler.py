@@ -94,11 +94,10 @@ def format_prompt(
     """
     truncated_response = _truncate_to_sentences(model_response, response_sentences)
     wrapped_reasoning = f"<think>\n{model_reasoning}\n</think>"
-    return template.format(
-        user_prompt=user_prompt,
-        model_reasoning=wrapped_reasoning,
-        model_response=truncated_response,
-    )
+    result = template.replace("{user_prompt}", user_prompt)
+    result = result.replace("{model_reasoning}", wrapped_reasoning)
+    result = result.replace("{model_response}", truncated_response)
+    return result
 
 
 # ── LLM call ─────────────────────────────────────────────────────────────────

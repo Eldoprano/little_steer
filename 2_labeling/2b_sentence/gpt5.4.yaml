@@ -42,3 +42,4 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gpt-5.4-2026-03-05"
   in_place: false
+  taxonomy_version: "v5"

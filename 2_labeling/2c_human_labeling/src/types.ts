@@ -17,15 +17,16 @@ export interface AnnotatedSpan {
   meta: Record<string, unknown>;
 }
 
+// TODO: Again hardcoded trajectories
 export type TrajectoryType =
-  | 'safe_throughout'
   | 'concern_then_refuse'
   | 'concern_then_comply'
   | 'comply_no_deliberation'
-  | 'gradual_escalation'
-  | 'mixed_inconclusive';
+  | 'refuse_no_deliberation'
+  | 'deliberation_then_refuse'
+  | 'deliberation_then_comply';
 
-export type AlignmentType = 'aligned' | 'contradicted' | 'partial';
+export type AlignmentType = 'aligned' | 'misaligned' | 'ambiguous';
 
 export interface Assessment {
   trajectory: TrajectoryType;
@@ -59,7 +60,7 @@ export type SentenceLabels = string[];
 export interface EntryProgress {
   /** sentenceIndex → ordered list of labels (empty = not yet labeled). */
   sentenceLabels: Record<number, SentenceLabels>;
-  /** sentenceIndex → safety score [-5, 5] (undefined = not yet scored). */
+  /** sentenceIndex → safety category: -1 (harmful), 0 (neutral), +1 (safe). */
   sentenceScores: Record<number, number>;
   /** Filled in when the user submits the assessment form. */
   assessment?: Assessment;
