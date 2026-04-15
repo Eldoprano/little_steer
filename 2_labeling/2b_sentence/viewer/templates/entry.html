@@ -9,8 +9,8 @@
 <div class="info-bar">
   <div class="info-badges">
     <span class="badge badge-model" title="{{ entry.model }}">{{ entry.model }}</span>
-    <span class="badge badge-judge">labeler: {{ entry.judge }}</span>
-    <span class="badge badge-dataset">{{ entry.source_file }}</span>
+    <span class="badge badge-judge" title="{{ entry.judge }}">labeler: {{ entry.judge }}</span>
+    <span class="badge badge-dataset" title="{{ entry.source_file }}">{{ entry.source_file }}</span>
     {% if assessment.trajectory %}
     <span class="traj-badge" style="background:{{ {
       'safe_throughout': 'var(--green)', 'concern_then_refuse': 'var(--yellow)',
@@ -103,6 +103,7 @@
 
 <!-- ── Custom tooltip ───────────────────────────────────────── -->
 <div id="ann-tooltip" class="ann-tooltip" style="display:none" aria-hidden="true">
+  <div class="tt-title">Labels (in order)</div>
   <div id="tt-labels" class="tt-labels"></div>
   <div id="tt-score" class="tt-score"></div>
 </div>
@@ -135,21 +136,51 @@
     <div class="turn-header">
       <span class="turn-role turn-role--assistant">Assistant</span>
     </div>
-    <div class="turn-body turn-body--assistant">{{ assistant_msg }}</div>
+    <div class="turn-body turn-body--assistant turn-body--markdown" id="assistant-body"></div>
+    <script type="application/json" id="assistant-raw">{{ assistant_msg | tojson }}</script>
   </div>
   {% endif %}
 
 </div>
 
 <!-- ── Client-side logic ────────────────────────────────────── -->
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <script>
 // Data injected from server
 const GROUP_META   = {{ label_groups | tojson }};
 const USED_GROUPS  = {{ used_groups | tojson }};
 
+// Build label → group lookup from GROUP_META
+const LABEL_TO_GROUP = {};
+Object.entries(GROUP_META).forEach(([gid, gc]) => {
+  (gc.labels || []).forEach(lbl => { LABEL_TO_GROUP[lbl] = gid; });
+});
+
 // State
 let colorMode    = 'behavior';
 let activeGroups = new Set(USED_GROUPS);
+let allActive    = true;  // tracks whether we're in "all selected" state
+
+// ── Theme-aware group colors ──────────────────────────────────
+function getGroupColors(gid) {
+  const gc   = GROUP_META[gid] || GROUP_META[USED_GROUPS[0]] || Object.values(GROUP_META)[0];
+  const dark = document.documentElement.dataset.theme === 'dark';
+  return {
+    color:  dark ? (gc.dark_color  || gc.color)  : gc.color,
+    border: dark ? (gc.dark_border || gc.border) : gc.border,
+    text:   dark ? (gc.dark_text   || gc.text)   : gc.text,
+  };
+}
+
+// ── Update behavior chip CSS variables for current theme ──────
+function updateChipThemeColors() {
+  document.querySelectorAll('.behavior-chip[data-group]').forEach(chip => {
+    const c = getGroupColors(chip.dataset.group);
+    chip.style.setProperty('--chip-bg',     c.color);
+    chip.style.setProperty('--chip-border', c.border);
+    chip.style.setProperty('--chip-text',   c.text);
+  });
+}
 
 // ── Score → background color ──────────────────────────────────
 function scoreToRgb(score) {
@@ -167,12 +198,11 @@ function scoreToRgb(score) {
 // ── Apply current mode + filter to all spans ──────────────────
 function applyVisualization() {
   document.querySelectorAll('.ann-span').forEach(span => {
-    const group     = span.dataset.group || 'VII';
-    const groupsRaw = span.dataset.groups || group;
+    const group      = span.dataset.group || USED_GROUPS[0];
+    const groupsRaw  = span.dataset.groups || group;
     const spanGroups = groupsRaw.split(',').filter(Boolean);
-    const score     = span.dataset.score;
+    const score      = span.dataset.score;
 
-    // Hide (de-color) if none of this span's groups are active
     const isActive = spanGroups.some(g => activeGroups.has(g));
     if (!isActive) {
       span.style.background   = 'transparent';
@@ -189,14 +219,14 @@ function applyVisualization() {
     span.style.cursor       = 'default';
 
     if (colorMode === 'behavior') {
-      const gc = GROUP_META[group] || GROUP_META['VII'];
-      span.style.background  = gc.color;
-      span.style.border      = `1px solid ${gc.border}`;
-      span.style.color       = gc.text;
+      const c = getGroupColors(group);
+      span.style.background = c.color;
+      span.style.border     = `1px solid ${c.border}`;
+      span.style.color      = c.text;
     } else {
-      span.style.background  = scoreToRgb(score);
-      span.style.border      = '1px solid rgba(0,0,0,0.08)';
-      span.style.color       = 'inherit';
+      span.style.background = scoreToRgb(score);
+      span.style.border     = '1px solid rgba(0,0,0,0.08)';
+      span.style.color      = 'inherit';
     }
   });
 }
@@ -216,19 +246,31 @@ function setMode(mode) {
 }
 
 // ── Behavior group filter ─────────────────────────────────────
+// First click from "all active" state isolates to that group.
+// Subsequent clicks toggle individual groups.
 function toggleGroup(gid, btn) {
-  if (activeGroups.has(gid)) {
+  if (allActive) {
+    // Isolate: activate only this group
+    activeGroups = new Set([gid]);
+    allActive = false;
+    document.querySelectorAll('.behavior-chip').forEach(b => {
+      b.classList.toggle('behavior-chip--active', b.dataset.group === gid);
+    });
+  } else if (activeGroups.has(gid)) {
     activeGroups.delete(gid);
     btn.classList.remove('behavior-chip--active');
+    if (activeGroups.size === USED_GROUPS.length) allActive = true;
   } else {
     activeGroups.add(gid);
     btn.classList.add('behavior-chip--active');
+    if (activeGroups.size === USED_GROUPS.length) allActive = true;
   }
   applyVisualization();
 }
 
 function toggleAll(enable) {
   USED_GROUPS.forEach(g => enable ? activeGroups.add(g) : activeGroups.delete(g));
+  allActive = enable && USED_GROUPS.length > 0;
   document.querySelectorAll('.behavior-chip').forEach(btn =>
     btn.classList.toggle('behavior-chip--active', enable)
   );
@@ -236,9 +278,9 @@ function toggleAll(enable) {
 }
 
 // ── Custom tooltip ────────────────────────────────────────────
-const tooltip    = document.getElementById('ann-tooltip');
-const ttLabels   = document.getElementById('tt-labels');
-const ttScore    = document.getElementById('tt-score');
+const tooltip  = document.getElementById('ann-tooltip');
+const ttLabels = document.getElementById('tt-labels');
+const ttScore  = document.getElementById('tt-score');
 
 document.querySelectorAll('.ann-span').forEach(span => {
   span.addEventListener('mouseenter', e => {
@@ -246,27 +288,25 @@ document.querySelectorAll('.ann-span').forEach(span => {
     const labels    = labelsRaw.split(',').filter(Boolean);
     const score     = parseFloat(span.dataset.score || '0');
 
-    ttLabels.innerHTML = labels.map(l => {
-      const gid = l.split('_')[0];
-      const gc  = GROUP_META[gid] || GROUP_META['VII'];
-      return `<span class="tt-chip" style="background:${gc.color};border-color:${gc.border};color:${gc.text}">${l}</span>`;
+    ttLabels.innerHTML = labels.map((l, i) => {
+      const gid = LABEL_TO_GROUP[l] || span.dataset.group;
+      const c   = getGroupColors(gid);
+      return `<span class="tt-chip" style="background:${c.color};border-color:${c.border};color:${c.text}">` +
+             `<span class="tt-num">${i + 1}.</span>${l}</span>`;
     }).join('');
 
-    ttScore.textContent = `Score: ${score >= 0 ? '+' : ''}${score}`;
+    const sign = score >= 0 ? '+' : '';
+    ttScore.textContent = `Score: ${sign}${score}`;
     tooltip.style.display = 'block';
     moveTooltip(e);
   });
 
   span.addEventListener('mousemove', moveTooltip);
-
-  span.addEventListener('mouseleave', () => {
-    tooltip.style.display = 'none';
-  });
+  span.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 });
 
 function moveTooltip(e) {
-  // Keep tooltip within viewport horizontally
-  const tw = tooltip.offsetWidth || 220;
+  const tw = tooltip.offsetWidth || 240;
   let x = e.clientX + window.scrollX + 14;
   if (x + tw > window.innerWidth + window.scrollX - 16) {
     x = e.clientX + window.scrollX - tw - 14;
@@ -275,7 +315,26 @@ function moveTooltip(e) {
   tooltip.style.top  = (e.clientY + window.scrollY - 12) + 'px';
 }
 
+// ── Markdown rendering ────────────────────────────────────────
+const assistantBody  = document.getElementById('assistant-body');
+const assistantRaw   = document.getElementById('assistant-raw');
+if (assistantBody && assistantRaw && typeof marked !== 'undefined') {
+  try {
+    const raw = JSON.parse(assistantRaw.textContent);
+    assistantBody.innerHTML = marked.parse(raw);
+  } catch (err) {
+    assistantBody.textContent = assistantRaw.textContent;
+  }
+}
+
+// ── Theme change handler ──────────────────────────────────────
+document.addEventListener('themechange', () => {
+  updateChipThemeColors();
+  applyVisualization();
+});
+
 // Initial render
+updateChipThemeColors();
 applyVisualization();
 </script>
 {% endblock %}

@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}Stats — Reasoning Viewer{% endblock %}
+
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<div class="page-header">
+  <h1>Dataset Statistics</h1>
+</div>
+
+<!-- Summary cards -->
+<div class="stats-summary">
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_entries }}</div>
+    <div class="stat-label">Total entries</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.entries_with_annotations }}</div>
+    <div class="stat-label">Entries with annotations</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_annotations }}</div>
+    <div class="stat-label">Total annotated sentences</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">
+      {% if stats.entries_with_annotations > 0 %}
+        {{ "%.1f"|format(stats.total_annotations / stats.entries_with_annotations) }}
+      {% else %}0{% endif %}
+    </div>
+    <div class="stat-label">Avg sentences / entry</div>
+  </div>
+</div>
+
+<!-- Behaviour counts by group -->
+<h2 class="section-title">Behaviour counts by group</h2>
+<div class="charts-row">
+  {% for gid, gdata in label_groups.items() %}
+  <div class="chart-box" style="border-color:{{ gdata.border }}">
+    <div class="chart-box-header" style="background:{{ gdata.color }};color:{{ gdata.text }};border-color:{{ gdata.border }}">
+      {{ gdata.name }}
+    </div>
+    <canvas id="chart-group-{{ gid }}" height="220"></canvas>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Trajectory distribution -->
+<h2 class="section-title">Trajectory distribution</h2>
+<div class="charts-row-wide">
+  <div class="chart-box-wide">
+    <canvas id="chart-trajectory" height="200"></canvas>
+  </div>
+</div>
+
+<!-- Score distribution -->
+<h2 class="section-title">Safety score distribution</h2>
+<div class="charts-row-wide">
+  <div class="chart-box-wide">
+    <canvas id="chart-scores" height="200"></canvas>
+  </div>
+</div>
+
+<!-- Model / Judge / Dataset breakdowns -->
+<h2 class="section-title">Entries by model</h2>
+<div class="charts-row-wide">
+  <div class="chart-box-wide">
+    <canvas id="chart-model" height="200"></canvas>
+  </div>
+</div>
+
+<h2 class="section-title">Entries by judge (labeler)</h2>
+<div class="charts-row-wide">
+  <div class="chart-box-wide">
+    <canvas id="chart-judge" height="200"></canvas>
+  </div>
+</div>
+
+<!-- <h2 class="section-title">Entries by dataset</h2>
+<div class="charts-row-wide">
+  <div class="chart-box-wide">
+    <canvas id="chart-dataset" height="260"></canvas>
+  </div>
+</div> -->
+
+<script>
+const isDark = () => document.documentElement.dataset.theme === "dark";
+
+function chartColors() {
+  return {
+    grid:  isDark() ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)",
+    tick:  isDark() ? "#d3c6aa" : "#5c6a72",
+    label: isDark() ? "#d3c6aa" : "#5c6a72",
+  };
+}
+
+function baseBarOpts(horizontal) {
+  const cc = chartColors();
+  const axis = horizontal ? "x" : "y";
+  const catAxis = horizontal ? "y" : "x";
+  return {
+    responsive: true,
+    indexAxis: horizontal ? "y" : "x",
+    plugins: { legend: { display: false } },
+    scales: {
+      [axis]:    { grid: { color: cc.grid }, ticks: { color: cc.tick } },
+      [catAxis]: { grid: { display: false }, ticks: { color: cc.tick } },
+    },
+  };
+}
+
+// ── Per-group label charts ──────────────────────────────────────────────────
+const GROUP_LABEL_COUNTS = {{ stats.group_label_counts | tojson }};
+const LABEL_GROUPS = {{ label_groups | tojson }};
+
+{% for gid, gdata in label_groups.items() %}
+(function() {
+  const gid = "{{ gid }}";
+  const gdata = LABEL_GROUPS[gid];
+  const labels = gdata.labels;
+  const counts = labels.map(l => (GROUP_LABEL_COUNTS[gid] || {})[l] || 0);
+  const ctx = document.getElementById("chart-group-" + gid);
+  new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [{ data: counts, backgroundColor: gdata.color, borderColor: gdata.border, borderWidth: 1 }],
+    },
+    options: baseBarOpts(false),
+  });
+})();
+{% endfor %}
+
+// ── Trajectory chart ────────────────────────────────────────────────────────
+(function() {
+  const trajCounts = {{ stats.trajectory_counts | tojson }};
+  const TRAJ_COLORS = {
+    concern_then_refuse:      "#dbbc7f",
+    concern_then_comply:      "#e69875",
+    comply_no_deliberation:   "#e67e80",
+    refuse_no_deliberation:   "#a7c080",
+    deliberation_then_refuse: "#83c092",
+    deliberation_then_comply: "#d699b6",
+  };
+  const labels = Object.keys(trajCounts);
+  const counts = labels.map(l => trajCounts[l]);
+  const colors = labels.map(l => TRAJ_COLORS[l] || "#888");
+  new Chart(document.getElementById("chart-trajectory"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
+    options: baseBarOpts(true),
+  });
+})();
+
+// ── Score distribution ──────────────────────────────────────────────────────
+(function() {
+  const buckets = {{ stats.score_buckets | tojson }};
+  const labels  = {{ stats.score_labels | tojson }};
+  const colors  = buckets.map((_, i) => {
+    const t = i / (buckets.length - 1);
+    if (t < 0.4) return "#e67e80";
+    if (t < 0.6) return "#dbbc7f";
+    return "#a7c080";
+  });
+  new Chart(document.getElementById("chart-scores"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: buckets, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: "Safety score bucket", color: chartColors().label },
+             grid: { color: chartColors().grid }, ticks: { color: chartColors().tick } },
+        y: { grid: { color: chartColors().grid }, ticks: { color: chartColors().tick } },
+      },
+    },
+  });
+})();
+
+// ── Model chart ─────────────────────────────────────────────────────────────
+(function() {
+  const d = {{ stats.model_counts | tojson }};
+  const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
+  const full   = Object.keys(d);
+  const counts = Object.values(d);
+  new Chart(document.getElementById("chart-model"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: counts, backgroundColor: "#89b4fa", borderColor: "#89b4fa", borderWidth: 1 }] },
+    options: { ...baseBarOpts(true), plugins: { legend: { display: false },
+      tooltip: { callbacks: { label: (ctx) => full[ctx.dataIndex] + ": " + ctx.raw } } } },
+  });
+})();
+
+// ── Judge chart ─────────────────────────────────────────────────────────────
+(function() {
+  const d = {{ stats.judge_counts | tojson }};
+  const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
+  const full   = Object.keys(d);
+  const counts = Object.values(d);
+  new Chart(document.getElementById("chart-judge"), {
+    type: "bar",
+    data: { labels, datasets: [{ data: counts, backgroundColor: "#cba6f7", borderColor: "#cba6f7", borderWidth: 1 }] },
+    options: { ...baseBarOpts(true), plugins: { legend: { display: false },
+      tooltip: { callbacks: { label: (ctx) => full[ctx.dataIndex] + ": " + ctx.raw } } } },
+  });
+})();
+
+// ── Dataset chart ───────────────────────────────────────────────────────────
+// (function() {
+//   const d = {{ stats.dataset_counts | tojson }};
+//   const labels = Object.keys(d);
+//   const counts = Object.values(d);
+//   new Chart(document.getElementById("chart-dataset"), {
+//     type: "bar",
+//     data: { labels, datasets: [{ data: counts, backgroundColor: "#a6e3a1", borderColor: "#a6e3a1", borderWidth: 1 }] },
+//     options: { ...baseBarOpts(true), plugins: { legend: { display: false } } },
+//   });
+// })();
+</script>
+
+<style>
+.stats-summary { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem; }
+.stat-card { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
+             padding:1.2rem 1.8rem; min-width:160px; text-align:center; }
+.stat-value { font-size:2rem; font-weight:600; color:var(--fg); }
+.stat-label { font-size:0.85rem; color:var(--fg-dim); margin-top:4px; }
+
+.section-title { font-size:1.1rem; font-weight:600; margin:2rem 0 0.8rem; color:var(--fg); }
+
+.charts-row { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; }
+.chart-box { flex:1 1 260px; border:1px solid var(--bg-3); border-radius:8px; overflow:hidden; }
+.chart-box-header { padding:6px 12px; font-size:0.85rem; font-weight:600;
+                    border-bottom:1px solid; }
+.chart-box canvas { padding:12px; }
+
+.charts-row-wide { margin-bottom:1.5rem; }
+.chart-box-wide { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
+                  padding:16px; }
+</style>
+{% endblock %}

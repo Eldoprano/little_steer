@@ -7,12 +7,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <!-- Set theme before content renders to avoid flash and ensure correct chart colors -->
+  <script>document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";</script>
 </head>
 <body>
   <nav class="navbar">
     <div>
       <a href="/" class="nav-brand">Reasoning Viewer</a>
       <span class="nav-sub">Labeled reasoning traces</span>
+      <a href="/stats" class="nav-link">Stats</a>
     </div>
     <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle dark/light mode">🌙</button>
   </nav>
@@ -33,6 +36,7 @@
         root.dataset.theme = next;
         localStorage.setItem("theme", next);
         btn.textContent = next === "dark" ? "☀️" : "🌙";
+        document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: next } }));
       });
     })();
   </script>

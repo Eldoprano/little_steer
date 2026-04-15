@@ -3,72 +3,42 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from html import escape
 from pathlib import Path
 from typing import Any
 
-DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled"
+_DEFAULT_DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled" / "v5"
+DATA_DIR: Path = Path(os.environ["VIEWER_DATA_DIR"]) if "VIEWER_DATA_DIR" in os.environ else _DEFAULT_DATA_DIR
 
-# ── Label group metadata ───────────────────────────────────────────────────────
+# ── Label group metadata (loaded from taxonomy.json) ─────────────────────────
 
-LABEL_GROUPS: dict[str, dict[str, str]] = {
-    "I": {
-        "name": "Prompt Processing",
-        "color": "#dbeafe",
-        "border": "#93c5fd",
-        "text": "#1e40af",
-        "labels": ["I_REPHRASE_PROMPT", "I_SPECULATE_USER_MOTIVE", "I_FLAG_EVALUATION_AWARENESS"],
-    },
-    "II": {
-        "name": "Safety Assessment",
-        "color": "#fee2e2",
-        "border": "#fca5a5",
-        "text": "#991b1b",
-        "labels": [
-            "II_FLAG_PROMPT_AS_HARMFUL", "II_STATE_SAFETY_CONCERN", "II_STATE_LEGAL_CONCERN",
-            "II_STATE_ETHICAL_MORAL_CONCERN", "II_CHECK_POLICY_SCOPE", "II_CAUTIOUS_FRAMING",
-        ],
-    },
-    "III": {
-        "name": "Deliberation",
-        "color": "#fef9c3",
-        "border": "#fde047",
-        "text": "#713f12",
-        "labels": ["III_WEIGH_DECISION", "III_REFRAME_TOWARD_SAFETY", "III_REFRAME_TOWARD_COMPLIANCE"],
-    },
-    "IV": {
-        "name": "Intent Declaration",
-        "color": "#ede9fe",
-        "border": "#c4b5fd",
-        "text": "#4c1d95",
-        "labels": ["IV_INTEND_REFUSAL", "IV_INTEND_HARMFUL_COMPLIANCE"],
-    },
-    "V": {
-        "name": "Knowledge & Content",
-        "color": "#ffedd5",
-        "border": "#fdba74",
-        "text": "#7c2d12",
-        "labels": ["V_STATE_FACT_OR_KNOWLEDGE", "V_DETAIL_HARMFUL_METHOD"],
-    },
-    "VI": {
-        "name": "Meta-Cognition",
-        "color": "#dcfce7",
-        "border": "#86efac",
-        "text": "#14532d",
-        "labels": [
-            "VI_EXPRESS_UNCERTAINTY", "VI_SELF_CORRECT",
-            "VI_PLAN_REASONING_STEP", "VI_SUMMARIZE_REASONING",
-        ],
-    },
-    "VII": {
-        "name": "Filler",
-        "color": "#f3f4f6",
-        "border": "#d1d5db",
-        "text": "#374151",
-        "labels": ["VII_NEUTRAL_FILLER"],
-    },
-}
+_TAXONOMY_PATH = Path(__file__).parents[2] / "taxonomy.json"
+
+
+def _build_label_groups() -> dict[str, dict[str, Any]]:
+    with open(_TAXONOMY_PATH, encoding="utf-8") as f:
+        tax = json.load(f)
+    result: dict[str, dict[str, Any]] = {}
+    for group in tax["groups"]:
+        colors = group["colors"]
+        dark = colors.get("dark", colors["light"])
+        result[group["id"]] = {
+            "name": group["name"],
+            "synthetic": group.get("synthetic", False),
+            "color": colors["light"]["bg"],
+            "border": colors["light"]["border"],
+            "text": colors["light"]["text"],
+            "dark_color": dark["bg"],
+            "dark_border": dark["border"],
+            "dark_text": dark["text"],
+            "labels": [label["id"] for label in group["labels"]],
+        }
+    return result
+
+
+LABEL_GROUPS: dict[str, dict[str, Any]] = _build_label_groups()
 
 # Build label → group lookup
 LABEL_TO_GROUP: dict[str, str] = {}
@@ -76,14 +46,20 @@ for gid, gdata in LABEL_GROUPS.items():
     for lbl in gdata["labels"]:
         LABEL_TO_GROUP[lbl] = gid
 
+# Fallback is the last non-synthetic group
+_FALLBACK_GROUP = next(
+    gid for gid in reversed(list(LABEL_GROUPS.keys()))
+    if not LABEL_GROUPS[gid].get("synthetic", False)
+)
+
 
 def label_group(label: str) -> str:
-    """Return the group ID for a label (e.g. 'II'), or 'VII' as fallback."""
-    return LABEL_TO_GROUP.get(label, "VII")
+    """Return the group ID for a label, or the last group as fallback."""
+    return LABEL_TO_GROUP.get(label, _FALLBACK_GROUP)
 
 
-def group_color(group_id: str) -> dict[str, str]:
-    return LABEL_GROUPS.get(group_id, LABEL_GROUPS["VII"])
+def group_color(group_id: str) -> dict[str, Any]:
+    return LABEL_GROUPS.get(group_id, LABEL_GROUPS[_FALLBACK_GROUP])
 
 
 # ── JSONL loading ──────────────────────────────────────────────────────────────
@@ -194,6 +170,87 @@ def entry_summary(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── Statistics ────────────────────────────────────────────────────────────────
+
+def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute dataset-wide statistics across all entries."""
+    label_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
+    model_counts: dict[str, int] = {}
+    judge_counts: dict[str, int] = {}
+    dataset_counts: dict[str, int] = {}
+    trajectory_counts: dict[str, int] = {}
+    alignment_counts: dict[str, int] = {}
+    score_buckets: list[int] = [0, 0, 0]  # -1, 0, +1
+
+    total_annotations = 0
+    entries_with_annotations = 0
+
+    for entry in entries:
+        annotations = entry.get("annotations") or []
+        metadata = entry.get("metadata") or {}
+        assessment = metadata.get("assessment") or {}
+
+        if annotations:
+            entries_with_annotations += 1
+
+        for ann in annotations:
+            total_annotations += 1
+            score = ann.get("score")
+            if score is not None:
+                s = int(float(score))
+                if s == -1:
+                    score_buckets[0] += 1
+                elif s == 0:
+                    score_buckets[1] += 1
+                elif s == 1:
+                    score_buckets[2] += 1
+
+            for lbl in (ann.get("labels") or []):
+                label_counts[lbl] = label_counts.get(lbl, 0) + 1
+                gid = label_group(lbl)
+                group_counts[gid] = group_counts.get(gid, 0) + 1
+
+        model = entry.get("model", "")
+        if model:
+            model_counts[model] = model_counts.get(model, 0) + 1
+        judge = entry.get("judge", "")
+        if judge:
+            judge_counts[judge] = judge_counts.get(judge, 0) + 1
+        ds = entry.get("source_file", "")
+        if ds:
+            dataset_counts[ds] = dataset_counts.get(ds, 0) + 1
+        traj = assessment.get("trajectory", "")
+        if traj:
+            trajectory_counts[traj] = trajectory_counts.get(traj, 0) + 1
+        aln = assessment.get("alignment", "")
+        if aln:
+            alignment_counts[aln] = alignment_counts.get(aln, 0) + 1
+
+    # Build per-group label breakdown (ordered by group definition)
+    group_label_counts: dict[str, dict[str, int]] = {}
+    for gid, gdata in LABEL_GROUPS.items():
+        group_label_counts[gid] = {lbl: label_counts.get(lbl, 0) for lbl in gdata["labels"]}
+
+    score_labels = ["-1", "0", "1"]
+
+    return {
+        "total_entries": len(entries),
+        "total_annotations": total_annotations,
+        "entries_with_annotations": entries_with_annotations,
+        "label_counts": dict(sorted(label_counts.items(), key=lambda x: -x[1])),
+        "group_counts": group_counts,
+        "group_label_counts": group_label_counts,
+        "model_counts": dict(sorted(model_counts.items(), key=lambda x: -x[1])),
+        "judge_counts": dict(sorted(judge_counts.items(), key=lambda x: -x[1])),
+        "dataset_counts": dict(sorted(dataset_counts.items(), key=lambda x: -x[1])),
+        "trajectory_counts": dict(sorted(trajectory_counts.items(), key=lambda x: -x[1])),
+        "alignment_counts": dict(sorted(alignment_counts.items(), key=lambda x: -x[1])),
+        "score_buckets": score_buckets,
+        "score_labels": score_labels,
+    }
+
+
 # ── Reasoning HTML renderer ────────────────────────────────────────────────────
 
 def render_reasoning_html(reasoning_text: str, annotations: list[dict]) -> str:
@@ -237,7 +294,7 @@ def render_reasoning_html(reasoning_text: str, annotations: list[dict]) -> str:
         if pos < start:
             parts.append(_escape_plain(reasoning_text[pos:start]))
 
-        labels = ann.get("labels") or ["VII_NEUTRAL_FILLER"]
+        labels = ann.get("labels") or ["neutralFiller"]
         primary = labels[0]
         gid = label_group(primary)
         gc = group_color(gid)

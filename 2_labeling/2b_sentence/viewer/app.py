@@ -20,6 +20,7 @@ from flask import Flask, abort, jsonify, render_template
 from viewer.data_loader import (
     DATA_DIR,
     LABEL_GROUPS,
+    compute_stats,
     entry_summary,
     get_entry,
     get_filter_options,
@@ -106,6 +107,17 @@ def entry_detail(entry_id: str):
         used_groups=sorted(used_groups),
         group_counts=group_counts,
         avg_score=avg_score,
+        label_groups=LABEL_GROUPS,
+    )
+
+
+@app.route("/stats")
+def stats():
+    entries = _load()
+    s = compute_stats(entries)
+    return render_template(
+        "stats.html",
+        stats=s,
         label_groups=LABEL_GROUPS,
     )
 
