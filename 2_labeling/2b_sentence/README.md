@@ -27,6 +27,92 @@ uv run run.py --config lmstudio.yaml ../../data/1_generated/
 
 Output lands in `data/labeled/` (configurable via config YAML) as JSONL files. Each run is checkpointed so it can be interrupted and resumed.
 
+## Testing a new setup
+
+Use this procedure any time you change the prompt, system prompt, or add a new feature, to verify a judge is working before running the full dataset.
+
+**1. Extract one sample entry:**
+
+```bash
+python3 -c "
+import json
+with open('../../data/1_generated/deepseek-r1-distill-llama-8b-heretic_clear_harm.jsonl') as f:
+    line = f.readline()
+with open('/tmp/test_one_sample.jsonl', 'w') as out:
+    out.write(line)
+print('prompt_safety:', json.loads(line).get('metadata', {}).get('prompt_safety'))
+"
+```
+
+This entry has `prompt_safety: unsafe`, so the canary string will be injected into the system prompt.
+
+**2. Create a minimal test config** (save as e.g. `/tmp/test_gpt5mini.yaml`):
+
+```yaml
+judge:
+  name: gpt-5.4-mini
+  model_id: gpt-5.4-mini
+  backend: openai
+  api_key_source: openai-api-key
+  temperature: 0.2
+  max_completion_tokens: 8192
+  timeout: 120
+
+secrets_file: "/path/to/.secrets.json"
+prompt_file: "/path/to/2b_sentence/prompt.md"
+system_prompt_file: "/path/to/2b_sentence/system_prompt.md"
+
+pipeline:
+  max_retries: 2
+  retry_delay: 2.0
+  checkpoint_every: 10
+  max_workers: 1
+  response_sentences: 5
+  skip_no_reasoning: true
+  overwrite_existing: true   # re-label even if already done
+
+mapper:
+  fuzzy_threshold: 0.85
+  max_lookahead_multiplier: 5
+  max_lookahead_min: 500
+
+output:
+  dir: "/tmp/test_labeling_output"
+  suffix: "_test"
+  in_place: false
+  taxonomy_version: ""
+```
+
+Important: **no `work_order_file`** — the test file won't be in the real work order.
+
+**3. Run both judges:**
+
+```bash
+uv run run.py --config /tmp/test_gpt5mini.yaml /tmp/test_one_sample.jsonl
+uv run run.py --config /tmp/test_gemini_flash_lite.yaml /tmp/test_one_sample.jsonl
+```
+
+Expected output: each judge shows `Labeled: 1`, no failures.
+
+**4. Inspect the output:**
+
+```bash
+python3 -c "
+import json, os
+for f in sorted(os.listdir('/tmp/test_labeling_output')):
+    if not f.endswith('.jsonl'): continue
+    d = json.loads(open(f'/tmp/test_labeling_output/{f}').read())
+    ann = d.get('annotations', [])
+    print(f'{f}: judge={d[\"judge\"]}, spans={len(ann)}, first_labels={ann[0][\"labels\"] if ann else []}')
+"
+```
+
+**What this validates:**
+- System prompt is loaded and sent to the judge
+- Canary is injected in the system prompt for `unsafe` entries (invisible in output, but present in the API call)
+- JSON output is parsed correctly and spans are mapped back to the reasoning text
+- Both OpenAI-compatible backends (openai + gemini) are working
+
 ## Multi-judge runs
 
 All labeling runs — including comparisons across multiple judges — are configured in **YAML files**, not in Python code.

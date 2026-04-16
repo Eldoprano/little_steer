@@ -378,6 +378,7 @@ def process_file(
     client: openai.OpenAI,
     judge_cfg: JudgeConfig,
     prompt_template: str,
+    system_prompt_text: str | None,
     pipeline_cfg: PipelineConfig,
     mapper_cfg: MapperConfig,
     console: Console,
@@ -484,10 +485,13 @@ def process_file(
         # Pre-flight token estimate: skip if this request would push us over the daily budget.
         # Estimate = prompt chars / 4 (rough token heuristic) + max output tokens.
         if token_budget is not None:
-            estimated_prompt_tokens = len(format_prompt(
-                prompt_template, user_prompt, reasoning_text, response_text,
-                pipeline_cfg.response_sentences,
-            )) // 4
+            estimated_prompt_tokens = (
+                len(system_prompt_text or "") +
+                len(format_prompt(
+                    prompt_template, user_prompt, reasoning_text, response_text,
+                    pipeline_cfg.response_sentences,
+                ))
+            ) // 4
             max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
             if not token_budget.can_afford(estimated_prompt_tokens + max_comp):
                 token_budget.stop_event.set()
@@ -508,6 +512,8 @@ def process_file(
             console.print(f"[dim yellow]{msg}[/dim yellow]")
 
         try:
+            is_unsafe = entry.metadata.get("prompt_safety") == "unsafe"
+            
             labeling_output: LabelingOutput = label_entry(
                 client=client,
                 cfg=judge_cfg,
@@ -516,9 +522,11 @@ def process_file(
                 model_reasoning=reasoning_text,
                 model_response=response_text,
                 entry_id=entry.id,
+                system_prompt=system_prompt_text,
                 response_sentences=pipeline_cfg.response_sentences,
                 max_retries=pipeline_cfg.max_retries,
                 retry_delay=pipeline_cfg.retry_delay,
+                is_unsafe=is_unsafe,
             )
         except BillingQuotaError as e:
             console.print(f"[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
@@ -603,6 +611,7 @@ def process_breadth_first(
     client: openai.OpenAI,
     judge_cfg: JudgeConfig,
     prompt_template: str,
+    system_prompt_text: str | None,
     pipeline_cfg: PipelineConfig,
     mapper_cfg: MapperConfig,
     console: Console,
@@ -705,10 +714,13 @@ def process_breadth_first(
         response_text = assistant_content or ""
 
         if token_budget is not None:
-            estimated = len(format_prompt(
-                prompt_template, user_prompt, reasoning_text, response_text,
-                pipeline_cfg.response_sentences,
-            )) // 4
+            estimated = (
+                len(system_prompt_text or "") +
+                len(format_prompt(
+                    prompt_template, user_prompt, reasoning_text, response_text,
+                    pipeline_cfg.response_sentences,
+                ))
+            ) // 4
             max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
             if not token_budget.can_afford(estimated + max_comp):
                 token_budget.stop_event.set()
@@ -723,6 +735,8 @@ def process_breadth_first(
             console.print(f"[dim yellow]{msg}[/dim yellow]")
 
         try:
+            is_unsafe = entry.metadata.get("prompt_safety") == "unsafe"
+            
             labeling_output = label_entry(
                 client=client,
                 cfg=judge_cfg,
@@ -731,9 +745,11 @@ def process_breadth_first(
                 model_reasoning=reasoning_text,
                 model_response=response_text,
                 entry_id=eid,
+                system_prompt=system_prompt_text,
                 response_sentences=pipeline_cfg.response_sentences,
                 max_retries=pipeline_cfg.max_retries,
                 retry_delay=pipeline_cfg.retry_delay,
+                is_unsafe=is_unsafe,
             )
         except BillingQuotaError:
             console.print("[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
@@ -870,8 +886,13 @@ def run_pipeline(
 
     client = build_client(effective_judge, secrets)
 
-    # Load prompt template
+    # Load prompt template and optional system prompt
     prompt_template = inject_taxonomy(prompt_path.read_text(encoding="utf-8"))
+    system_prompt_text: str | None = None
+    if config.system_prompt_file:
+        sp_path = config.resolve_path(config_path, config.system_prompt_file)
+        if sp_path.exists():
+            system_prompt_text = inject_taxonomy(sp_path.read_text(encoding="utf-8"))
 
     # Set up token budget (daily token limit for OpenAI-style billing)
     token_budget: TokenBudget | None = None
@@ -997,6 +1018,7 @@ def run_pipeline(
                 client=client,
                 judge_cfg=effective_judge,
                 prompt_template=prompt_template,
+                system_prompt_text=system_prompt_text,
                 pipeline_cfg=config.pipeline,
                 mapper_cfg=config.mapper,
                 console=console,
@@ -1074,6 +1096,7 @@ def run_pipeline(
                 client=client,
                 judge_cfg=effective_judge,
                 prompt_template=prompt_template,
+                system_prompt_text=system_prompt_text,
                 pipeline_cfg=config.pipeline,
                 mapper_cfg=config.mapper,
                 console=console,

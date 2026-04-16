@@ -239,6 +239,7 @@ class LabelerConfig(BaseModel):
 
     secrets_file: str = "../../.secrets.json"
     prompt_file: str = "prompt.md"
+    system_prompt_file: str | None = "system_prompt.md"
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     mapper: MapperConfig = Field(default_factory=MapperConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
