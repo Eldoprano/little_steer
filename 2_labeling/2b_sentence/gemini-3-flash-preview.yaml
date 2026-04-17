@@ -38,4 +38,3 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gemini-3-flash-preview"
   in_place: false
-  taxonomy_version: "v6"

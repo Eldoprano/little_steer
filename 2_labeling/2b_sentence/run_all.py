@@ -28,6 +28,8 @@ from rich.table import Table
 from rich.text import Text
 
 HERE = Path(__file__).parent
+ARTIFACTS_DIR = HERE / "_artifacts"
+ARTIFACTS_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = (HERE / "../../data/2b_labeled").resolve()
 
 CONFIGS = [
@@ -107,8 +109,8 @@ def load_judge_meta(config_name: str) -> JudgeMeta:
         suffix=suffix,
         budget_type=budget_type,
         budget_limit=budget_limit,
-        budget_state_file=(config_path.parent / state_file).resolve(),
-        logfile=HERE / f"run_all_{config_name.replace('.yaml', '')}.log",
+        budget_state_file=config_path.parent / state_file,
+        logfile=ARTIFACTS_DIR / f"run_all_{config_name.replace('.yaml', '')}.log",
         taxonomy_version=taxonomy_version,
     )
 

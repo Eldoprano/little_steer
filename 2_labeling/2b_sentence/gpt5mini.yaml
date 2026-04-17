@@ -30,7 +30,7 @@ pipeline:
   # Free tier: 2.5M tokens/day — resets at 00:00 UTC (19:00 Lima time).
   # The state file persists usage per UTC day; re-run same command to resume.
   token_budget: 2500000
-  budget_state_file: "gpt5mini_token_budget.json"
+  budget_state_file: "_artifacts/gpt5mini_token_budget.json"
 
   # ── Shared work order ───────────────────────────────────────────────────────
   # All judges target the same pre-selected entries in the same file order so
@@ -48,4 +48,3 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gpt-5.4-mini"
   in_place: false
-  taxonomy_version: "v6"

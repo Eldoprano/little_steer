@@ -50,6 +50,11 @@ def get_fallback_label() -> str:
     return _real_groups(tax)[-1]["labels"][-1]["id"]
 
 
+def get_taxonomy_version() -> str:
+    """Return the taxonomy version from taxonomy.json (e.g., 'v6')."""
+    return load_taxonomy().get("version", "")
+
+
 def build_prompt_sections() -> dict[str, str]:
     """Build the taxonomy-derived sections for prompt.md injection.
 

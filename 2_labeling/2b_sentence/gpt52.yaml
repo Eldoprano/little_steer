@@ -29,7 +29,7 @@ pipeline:
   # ── Daily token budget ──────────────────────────────────────────────────────
   # Adjust once you know the actual free-tier limit for this model.
   token_budget: 250000
-  budget_state_file: "gpt52_token_budget.json"
+  budget_state_file: "_artifacts/gpt52_token_budget.json"
 
   # ── Shared work order ───────────────────────────────────────────────────────
   work_order_file: "work_order.json"
@@ -45,4 +45,3 @@ output:
   dir: "../../data/2b_labeled"
   suffix: "_gpt-5.2-2025-12-11"
   in_place: false
-  taxonomy_version: "v5"

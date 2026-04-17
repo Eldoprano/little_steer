@@ -32,7 +32,7 @@ from thesis_schema import AnnotatedSpan, ConversationEntry
 from .labeler import BillingQuotaError, LabelingError, build_client, format_prompt, label_entry, load_secrets
 from .mapper import map_sentences_to_spans
 from .schema import JudgeConfig, LabelerConfig, LabelingOutput, MapperConfig, PipelineConfig
-from .taxonomy_loader import inject_taxonomy
+from .taxonomy_loader import get_taxonomy_version, inject_taxonomy
 
 
 # ── Token budget ──────────────────────────────────────────────────────────────
@@ -42,13 +42,14 @@ class TokenBudget:
 
     def __init__(self, daily_limit: int, state_file: Path):
         self.daily_limit = daily_limit
+        self.safety_limit = int(daily_limit * 0.95)  # Stop at 95% to avoid overages with concurrent workers
         self.state_file = state_file
         self._lock = threading.Lock()
         self._today = datetime.now(timezone.utc).date().isoformat()
         self._data: dict[str, int] = {}
         self._load()
         self.stop_event = threading.Event()
-        if self.tokens_used_today() >= self.daily_limit:
+        if self.tokens_used_today() >= self.safety_limit:
             self.stop_event.set()
 
     def _load(self) -> None:
@@ -68,21 +69,21 @@ class TokenBudget:
         return self._data.get(self._today, 0)
 
     def remaining(self) -> int:
-        return max(0, self.daily_limit - self.tokens_used_today())
+        return max(0, self.safety_limit - self.tokens_used_today())
 
     def can_proceed(self) -> bool:
         return not self.stop_event.is_set()
 
     def can_afford(self, estimated_tokens: int) -> bool:
-        """Return False if spending estimated_tokens would push us over the daily limit."""
+        """Return False if spending estimated_tokens would push us over the safety limit."""
         with self._lock:
-            return self._data.get(self._today, 0) + estimated_tokens <= self.daily_limit
+            return self._data.get(self._today, 0) + estimated_tokens <= self.safety_limit
 
     def consume(self, tokens: int) -> None:
         with self._lock:
             self._data[self._today] = self._data.get(self._today, 0) + tokens
             self._save()
-            if self._data[self._today] >= self.daily_limit:
+            if self._data[self._today] >= self.safety_limit:
                 self.stop_event.set()
 
 
@@ -454,6 +455,11 @@ def process_file(
         if per_file_stop.is_set():
             return "budget"
 
+        # Skip entries flagged as low quality (max_length, repetition, etc.)
+        # approved=False is set by the generator; missing key means legacy entry (treat as ok).
+        if entry.metadata.get("approved") is False:
+            return "skipped"
+
         # Skip if already annotated (and not overwriting)
         if entry.annotations and not pipeline_cfg.overwrite_existing:
             return "skipped"
@@ -695,6 +701,9 @@ def process_breadth_first(
             return "budget"
         if entry_limit is not None and not entry_limit.can_proceed():
             return "budget"
+        # Skip entries flagged as low quality.
+        if entry.metadata.get("approved") is False:
+            return "skipped"
         if entry.annotations and not pipeline_cfg.overwrite_existing:
             return "skipped"
 
@@ -862,8 +871,11 @@ def run_pipeline(
     secrets_path = config.resolve_path(config_path, config.secrets_file)
     prompt_path = config.resolve_path(config_path, config.prompt_file)
     output_dir = output_dir_override or config.resolve_path(config_path, config.output.dir)
-    if not output_dir_override and config.output.taxonomy_version:
-        output_dir = output_dir / config.output.taxonomy_version
+
+    # Auto-load taxonomy version from taxonomy.json if not set in config
+    taxonomy_version = config.output.taxonomy_version or get_taxonomy_version()
+    if not output_dir_override and taxonomy_version:
+        output_dir = output_dir / taxonomy_version
 
     effective_judge = judge_cfg or config.judges[0]
 
@@ -1028,7 +1040,7 @@ def run_pipeline(
                 token_budget=token_budget,
                 rate_limiter=rate_limiter,
                 entry_limit=entry_limit,
-                taxonomy_version=config.output.taxonomy_version,
+                taxonomy_version=taxonomy_version,
             )
 
         total = labeled + skipped + failed + budget_stopped
@@ -1108,7 +1120,7 @@ def run_pipeline(
                 entry_limit=entry_limit,
                 per_file_max=None if work_order else config.pipeline.max_entries_per_file,
                 allowed_ids=work_order.get(input_path.name) if work_order else None,
-                taxonomy_version=config.output.taxonomy_version,
+                taxonomy_version=taxonomy_version,
             )
 
             total = labeled + skipped + failed + budget_stopped
