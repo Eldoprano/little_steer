@@ -113,15 +113,21 @@ datasets:
 
 ```yaml
 generation:
-  write_chunk_size: 20
-  max_retries: 3
-  run_mode: sequential   # "sequential" or "interleaved"
+  write_chunk_size: 8          # prompts per batched vLLM call
+  max_retries: 1               # retry passes for incomplete <think> blocks
+  run_mode: sequential         # "sequential" or "interleaved"
 ```
 
-**`run_mode` explained:**
+**`write_chunk_size`** — prompts submitted to vLLM in one call. vLLM batches
+them in parallel via PagedAttention, so larger chunks = better throughput.
+Each chunk writes its results to disk on completion, so smaller chunks = faster
+Ctrl+C response and less lost work if the run dies. 8 is a good default on
+~16GB VRAM for reasoning models.
+
+**`run_mode`:**
 
 - `sequential` — finishes all prompts for dataset 1, then dataset 2, etc.
-- `interleaved` — round-robins one batch per dataset per cycle. Useful when you want early results across all datasets before any one is fully done.
+- `interleaved` — round-robins one chunk per dataset per cycle. Useful when you want early results across all datasets before any one is fully done.
 
 ## Output format
 
@@ -173,4 +179,67 @@ The script checks which `id`s are already present in the output file before gene
 
 - You can stop and restart at any time.
 - Multiple machines can write to separate output files and the files can be merged later by concatenating the JSONL lines (dedup by `id` if needed).
+
+## Quality control
+
+Every entry gets an `approved` flag in its metadata (`true`/`false`) based on
+cheap checks performed at write time: `max_length`, `failed`, empty response,
+or a bare `[/THINK]` prefix (LMStudio artifact).
+
+`generate_responses.py` deliberately does **not** regenerate bad entries — that
+work belongs to `fix_quality.py`, which can also run an expensive n-gram
+repetition audit offline. Typical workflow after a generation run:
+
+```bash
+uv run python fix_quality.py --tag --fix        # tag approved + fix artifacts
+uv run python fix_quality.py --remove           # delete bad entries
+uv run python generate_responses.py             # re-run to fill the gaps
+```
+
+The labeling pipeline (`2b_sentence`) skips any entry where `approved` is
+explicitly `false`.
+
+**`--sync-labeled` criterion:** Since the labeling pipeline labels reasoning sentences, only entries with **broken reasoning** are purged — specifically: repetition in reasoning, `failed`, missing reasoning, or `max_length` where the reasoning itself was cut off (response absent/tiny). Entries where `max_length` only truncated the response (reasoning was complete) and entries with `empty_response` or `think_artifact` alone are **kept**, because their reasoning labels are still valid.
+
+### Mistral reasoning prefill
+
+Models with `think_prefix: true` in `config.yaml` have `[THINK]` prepended as an assistant prefill on every generation call. This forces the model to open a reasoning block before answering, preventing the common failure mode where the model skips straight to the answer.
+
+### `fix_quality.py` — standalone audit and repair
+
+Use this to inspect and clean up existing files without re-running the full generator:
+
+```bash
+# Audit only — prints a table of issue counts per file
+uv run python fix_quality.py
+
+# Filter to one model
+uv run python fix_quality.py --model ministral
+
+# Add/update the approved field on all entries
+uv run python fix_quality.py --tag
+
+# Fix [/THINK] artifacts in-place (no regeneration needed)
+uv run python fix_quality.py --fix
+
+# Remove entries from 2b_labeled where the *response* is broken
+# (max_length, failed, empty, or think_artifact — NOT reasoning-only repetition)
+# Shows a preview table and asks for confirmation before deleting.
+uv run python fix_quality.py --sync-labeled
+
+# Delete bad entries from 1_generated so they get regenerated on the next run
+uv run python fix_quality.py --remove
+
+# Preview any operation without writing
+uv run python fix_quality.py --tag --fix --sync-labeled --remove --dry-run
+```
+
+Typical cleanup workflow for existing data:
+
+```bash
+uv run python fix_quality.py --tag --fix        # tag all + fix artifacts
+uv run python fix_quality.py --sync-labeled     # clean 2b_labeled
+uv run python fix_quality.py --remove           # clear bad entries
+# then re-run generate_responses.py to fill the gaps
+```
 

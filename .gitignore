@@ -99,3 +99,4 @@ notes/
 # Syncthing
 .stignore
 .stfolder/
+1_generating/debug_config.yaml
