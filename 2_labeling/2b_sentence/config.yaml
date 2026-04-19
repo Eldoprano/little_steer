@@ -26,7 +26,7 @@ pipeline:
   skip_no_reasoning: true        # skip entries without a "reasoning" message
   skip_no_response: false        # skip entries without an "assistant" message
   overwrite_existing: false      # if false, skip entries that already have annotations
-  max_reasoning_chars: null      # crop reasoning to this many chars (at nearest sentence boundary); null = no limit
+  max_reasoning_chars: 8000      # crop reasoning to this many chars (at nearest sentence boundary); null = no limit
 
 # ── Sentence mapping ──────────────────────────────────────────────────────────
 mapper:

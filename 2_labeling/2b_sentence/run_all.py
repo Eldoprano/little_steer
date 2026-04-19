@@ -23,6 +23,8 @@ from pathlib import Path
 
 import yaml
 from rich.console import Console
+from sentence_labeler.taxonomy_loader import get_taxonomy_version
+from sentence_labeler.schema import LabelerRegistry
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -32,14 +34,7 @@ ARTIFACTS_DIR = HERE / "_artifacts"
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = (HERE / "../../data/2b_labeled").resolve()
 
-CONFIGS = [
-    "gpt5mini.yaml",
-    # "gpt52.yaml",
-    "gemini-2.5-flash.yaml",
-    "gemini-2.5-flash-lite.yaml",
-    "gemini-3-flash-preview.yaml",
-    "gemini-3.1-flash-lite-preview.yaml",
-]
+LABELERS_FILE = "labelers.yaml"  # single source of truth; edit to add/enable/disable labelers
 
 # Only process input files whose names contain at least one of these substrings.
 # Set to None (or empty list) to process all files.
@@ -82,17 +77,13 @@ class JudgeMeta:
     taxonomy_version: str = ""  # e.g. "v5"; output is scoped to {OUTPUT_DIR}/{taxonomy_version}/
 
 
-def load_judge_meta(config_name: str) -> JudgeMeta:
-    config_path = HERE / config_name
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
-
-    judge = data.get("judge") or {}
-    name = judge.get("name", config_name.replace(".yaml", ""))
-    output = data.get("output") or {}
+def load_judge_meta(name: str, entry: dict) -> JudgeMeta:
+    """Build JudgeMeta from a merged labeler entry dict (as returned by LabelerRegistry)."""
+    judge = entry.get("judge") or {}
+    output = entry.get("output") or {}
     suffix = output.get("suffix", f"_{name}")
-    taxonomy_version = output.get("taxonomy_version", "")
-    pipeline = data.get("pipeline") or {}
+    taxonomy_version = output.get("taxonomy_version", "") or get_taxonomy_version()
+    pipeline = entry.get("pipeline") or {}
 
     if pipeline.get("token_budget") is not None:
         budget_type = "tokens"
@@ -104,13 +95,13 @@ def load_judge_meta(config_name: str) -> JudgeMeta:
         state_file = pipeline.get("request_state_file", "request_budget_state.json")
 
     return JudgeMeta(
-        config_file=config_name,
+        config_file=LABELERS_FILE,
         name=name,
         suffix=suffix,
         budget_type=budget_type,
         budget_limit=budget_limit,
-        budget_state_file=config_path.parent / state_file,
-        logfile=ARTIFACTS_DIR / f"run_all_{config_name.replace('.yaml', '')}.log",
+        budget_state_file=HERE / state_file,
+        logfile=ARTIFACTS_DIR / f"run_all_{name}.log",
         taxonomy_version=taxonomy_version,
     )
 
@@ -287,7 +278,7 @@ def print_status(console: Console, metas: list[JudgeMeta]) -> None:
     for meta in metas:
         try:
             result = sp.run(
-                ["pgrep", "-f", f"run.py --config {meta.config_file}"],
+                ["pgrep", "-f", f"run.py --config {meta.config_file} --judge {meta.name}"],
                 capture_output=True, text=True,
             )
             pid = result.stdout.strip().split("\n")[0] if result.returncode == 0 else None
@@ -413,13 +404,15 @@ def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
 def main() -> None:
     console = Console()
 
-    # Load config metadata
+    # Load config metadata from the registry
+    registry = LabelerRegistry.from_yaml(HERE / LABELERS_FILE)
     metas: list[JudgeMeta] = []
-    for cfg in CONFIGS:
+    for entry in registry.all_entries(enabled_only=True):
+        name = (entry.get("judge") or {}).get("name", "unknown")
         try:
-            metas.append(load_judge_meta(cfg))
+            metas.append(load_judge_meta(name, entry))
         except Exception as e:
-            console.print(f"[yellow]Warning: skipping {cfg}: {e}[/yellow]")
+            console.print(f"[yellow]Warning: skipping {name}: {e}[/yellow]")
 
     if not metas:
         console.print("[red]No valid configs found.[/red]")
@@ -471,7 +464,7 @@ def main() -> None:
         log_fh = open(meta.logfile, "w")
         log_handles.append(log_fh)
         proc = subprocess.Popen(
-            ["uv", "run", "run.py", "--config", meta.config_file, input_arg],
+            ["uv", "run", "run.py", "--config", meta.config_file, "--judge", meta.name, input_arg],
             cwd=str(HERE),
             stdout=log_fh,
             stderr=log_fh,

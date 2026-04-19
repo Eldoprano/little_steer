@@ -1,0 +1,371 @@
+# labelers.yaml — Single source of truth for all labeler configurations.
+#
+# Shared defaults apply to every entry; each labeler overrides only what differs.
+# Set enabled: false to disable a labeler without deleting it.
+#
+# Usage:
+#   uv run run.py --config labelers.yaml ../../data/1_generated/   # all enabled
+#   uv run run.py --config labelers.yaml --judge gpt-5.4-mini ../../data/1_generated/
+#   uv run run_all.py ../../data/1_generated/                      # parallel launch
+
+# ── Shared defaults ────────────────────────────────────────────────────────────
+defaults:
+  secrets_file: "../../.secrets.json"
+  prompt_file: "prompt.md"
+  system_prompt_file: "system_prompt.md"
+
+  judge:
+    temperature: 0.2
+    timeout: 120
+
+  pipeline:
+    max_workers: 1
+    max_retries: 2
+    retry_delay: 15.0
+    checkpoint_every: 10
+    response_sentences: 5
+    skip_no_reasoning: true
+    skip_no_response: false
+    overwrite_existing: false
+    max_reasoning_chars: 8000
+    work_order_file: "work_order.json"
+
+  mapper:
+    fuzzy_threshold: 0.85
+    max_lookahead_multiplier: 5
+    max_lookahead_min: 500
+
+  output:
+    dir: "../../data/2b_labeled"
+    in_place: false
+
+
+# ── Labelers ───────────────────────────────────────────────────────────────────
+labelers:
+
+  # ── OpenAI ──────────────────────────────────────────────────────────────────
+  - enabled: true
+    judge:
+      name: gpt-5.4-mini
+      model_id: gpt-5.4-mini
+      backend: openai
+      api_key_source: openai-api-key
+      max_completion_tokens: 8192
+    pipeline:
+      max_workers: 8
+      max_retries: 2
+      retry_delay: 2.0
+      token_budget: 2500000
+      budget_state_file: "_artifacts/gpt5mini_token_budget.json"
+    output:
+      suffix: "_gpt-5.4-mini"
+
+  - enabled: false
+    judge:
+      name: gpt-5.4-2026-03-05
+      model_id: gpt-5.4-2026-03-05
+      backend: openai
+      api_key_source: openai-api-key
+      max_completion_tokens: 8192
+    pipeline:
+      max_workers: 4
+      max_retries: 2
+      retry_delay: 2.0
+      token_budget: 250000
+      budget_state_file: "_artifacts/gpt5.4_token_budget.json"
+    output:
+      suffix: "_gpt-5.4-2026-03-05"
+
+  - enabled: false 
+    judge:
+      name: gpt-5.2-2025-12-11
+      model_id: gpt-5.2-2025-12-11
+      backend: openai
+      api_key_source: openai-api-key
+      max_completion_tokens: 8192
+    pipeline:
+      max_workers: 4
+      max_retries: 2
+      retry_delay: 2.0
+      token_budget: 250000
+      budget_state_file: "_artifacts/gpt52_token_budget.json"
+    output:
+      suffix: "_gpt-5.2-2025-12-11"
+
+  # ── Gemini (free tier) ───────────────────────────────────────────────────────
+  - enabled: true
+    judge:
+      name: gemini-2.5-flash
+      model_id: gemini-2.5-flash
+      backend: gemini
+      api_key_source: gemini-free-api-key
+      rpm: 10
+    pipeline:
+      max_retries: 2
+      retry_delay: 10.0
+      request_state_file: "gemini-2.5-flash_requests.json"
+    output:
+      suffix: "_gemini-2.5-flash"
+
+  - enabled: true
+    judge:
+      name: gemini-2.5-flash-lite
+      model_id: gemini-2.5-flash-lite
+      backend: gemini
+      api_key_source: gemini-free-api-key
+      rpm: 15
+    pipeline:
+      max_retries: 2
+      retry_delay: 8.0
+      request_state_file: "gemini-2.5-flash-lite_requests.json"
+    output:
+      suffix: "_gemini-2.5-flash-lite"
+
+  - enabled: true
+    judge:
+      name: gemini-3-flash-preview
+      model_id: gemini-3-flash-preview
+      backend: gemini
+      api_key_source: gemini-free-api-key
+      timeout: 180
+      rpm: 10
+    pipeline:
+      max_retries: 2
+      retry_delay: 10.0
+      request_state_file: "gemini-3-flash-preview_requests.json"
+    output:
+      suffix: "_gemini-3-flash-preview"
+
+  - enabled: true
+    judge:
+      name: gemini-3.1-flash-lite-preview
+      model_id: gemini-3.1-flash-lite-preview
+      backend: gemini
+      api_key_source: gemini-free-api-key
+      rpm: 15
+    pipeline:
+      max_retries: 2
+      retry_delay: 8.0
+      request_state_file: "gemini-3.1-flash-lite-preview_requests.json"
+    output:
+      suffix: "_gemini-3.1-flash-lite-preview"
+
+  # ── OpenRouter (free tier, ~167 req/day shared) ──────────────────────────────
+  - enabled: true
+    judge:
+      name: openrouter-glm
+      model_id: z-ai/glm-4.5-air:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_glm_request_state.json"
+    output:
+      suffix: "_openrouter-glm"
+
+  - enabled: true
+    judge:
+      name: openrouter-trinity
+      model_id: arcee-ai/trinity-large-preview:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_trinity_request_state.json"
+    output:
+      suffix: "_openrouter-trinity"
+
+  - enabled: true
+    judge:
+      name: openrouter-gpt-oss
+      model_id: openai/gpt-oss-120b:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_gpt_oss_request_state.json"
+    output:
+      suffix: "_openrouter-gpt-oss"
+
+  - enabled: true
+    judge:
+      name: openrouter-elephant-alpha
+      model_id: openrouter/elephant-alpha
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_elephant_alpha_request_state.json"
+    output:
+      suffix: "_openrouter-elephant-alpha"
+
+  - enabled: false
+    judge:
+      name: openrouter-qwen
+      model_id: qwen/qwen3-next-80b-a3b-instruct:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_qwen_request_state.json"
+    output:
+      suffix: "_openrouter-qwen"
+
+  - enabled: false
+    judge:
+      name: openrouter-llama
+      model_id: meta-llama/llama-3.3-70b-instruct:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 167
+    pipeline:
+      request_state_file: "_artifacts/openrouter_llama_request_state.json"
+    output:
+      suffix: "_openrouter-llama"
+
+  - enabled: false
+    judge:
+      name: openrouter-hermes
+      model_id: nousresearch/hermes-3-llama-3.1-405b:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 120
+      rpm: 20
+      rpd: 200
+    pipeline:
+      request_state_file: "_artifacts/openrouter_hermes_request_state.json"
+    output:
+      suffix: "_openrouter-hermes"
+
+  - enabled: false
+    judge:
+      name: openrouter-minimax
+      model_id: minimax/minimax-m2.5:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 300
+      rpm: 20
+      rpd: 143
+    pipeline:
+      request_state_file: "_artifacts/openrouter_minimax_request_state.json"
+    output:
+      suffix: "_openrouter-minimax"
+
+  - enabled: false
+    judge:
+      name: openrouter-nemotron
+      model_id: nvidia/nemotron-3-super-120b-a12b:free
+      backend: openrouter
+      api_key_source: openrouter-api-key
+      timeout: 120
+      rpm: 20
+      rpd: 143
+    pipeline:
+      request_state_file: "_artifacts/openrouter_nemotron_request_state.json"
+    output:
+      suffix: "_openrouter-nemotron"
+
+  # ── NVIDIA free inference ────────────────────────────────────────────────────
+  # backend: nvidia resolves to https://integrate.api.nvidia.com/v1 automatically
+  - enabled: false
+    judge:
+      name: nvidia-deepseek
+      model_id: deepseek-ai/deepseek-v3.2
+      backend: nvidia
+      api_key_source: nvidia-api-key
+    pipeline:
+      request_state_file: "_artifacts/nvidia_deepseek_request_state.json"
+    output:
+      suffix: "_nvidia-deepseek"
+
+  - enabled: false
+    judge:
+      name: nvidia-glm4.7
+      model_id: z-ai/glm4.7
+      backend: nvidia
+      api_key_source: nvidia-api-key
+    pipeline:
+      request_state_file: "_artifacts/nvidia_glm47_request_state.json"
+    output:
+      suffix: "_nvidia-glm4.7"
+
+  - enabled: false
+    judge:
+      name: nvidia-kimi
+      model_id: moonshotai/kimi-k2-thinking
+      backend: nvidia
+      api_key_source: nvidia-api-key
+    pipeline:
+      request_state_file: "_artifacts/nvidia_kimi_request_state.json"
+    output:
+      suffix: "_nvidia-kimi"
+
+  - enabled: false
+    judge:
+      name: nvidia-minimax
+      model_id: minimaxai/minimax-m2.7
+      backend: nvidia
+      api_key_source: nvidia-api-key
+      timeout: 300
+      rpm: 20
+    pipeline:
+      request_state_file: "_artifacts/nvidia_minimax_request_state.json"
+    output:
+      suffix: "_nvidia-minimax"
+
+  - enabled: false
+    judge:
+      name: nvidia-stepfun
+      model_id: stepfun-ai/step-3.5-flash
+      backend: nvidia
+      api_key_source: nvidia-api-key
+      timeout: 300
+      rpm: 20
+    pipeline:
+      request_state_file: "_artifacts/nvidia_stepfun_request_state.json"
+    output:
+      suffix: "_nvidia-stepfun"
+
+  - enabled: false  # same model as nvidia-stepfun, standard (no rate-limit) settings
+    judge:
+      name: nvidia-step
+      model_id: stepfun-ai/step-3.5-flash
+      backend: nvidia
+      api_key_source: nvidia-api-key
+    pipeline:
+      request_state_file: "_artifacts/nvidia_step_request_state.json"
+    output:
+      suffix: "_nvidia-step"
+
+  # ── Local (LMStudio) ─────────────────────────────────────────────────────────
+  # Start LMStudio, load the model, enable the local server (default port 1234).
+  # run.py will pause and prompt before each lmstudio_prompt judge.
+  - enabled: false
+    judge:
+      name: gpt-oss-20b
+      model_id: gpt-oss-20b        # must match the name LMStudio reports
+      backend: custom
+      base_url: http://localhost:1234/v1
+      api_key_source: lm-studio-key  # any non-empty value; add "lm-studio-key": "lm-studio" to .secrets.json
+      temperature: 0.4
+      max_tokens: 20000
+      timeout: 300
+      reasoning_effort: low
+      lmstudio_prompt: true
+    pipeline:
+      max_retries: 3
+      retry_delay: 3.0
+    output:
+      suffix: ""
