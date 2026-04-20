@@ -218,6 +218,7 @@ class CheckpointManager:
         r = reason.lower()
         return any(kw in r for kw in (
             "quota", "billing", "check your plan", "429", "rate limit", "resource_exhausted",
+            "could not parse", "timed out", "connection", "provider returned error",
         ))
 
     def load(self) -> set[str]:
@@ -476,8 +477,11 @@ def process_file(
             return "skipped"
 
         # Crop reasoning if max_reasoning_chars is set
+        reasoning_truncated = False
         if pipeline_cfg.max_reasoning_chars is not None:
-            reasoning_text = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
+            cropped = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
+            reasoning_truncated = len(cropped) < len(reasoning_text)
+            reasoning_text = cropped
 
         # Find user/assistant content
         user_prompt = _find_user_msg(entry)
@@ -496,6 +500,7 @@ def process_file(
                 len(format_prompt(
                     prompt_template, user_prompt, reasoning_text, response_text,
                     pipeline_cfg.response_sentences,
+                    reasoning_truncated=reasoning_truncated,
                 ))
             ) // 4
             max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
@@ -533,6 +538,7 @@ def process_file(
                 max_retries=pipeline_cfg.max_retries,
                 retry_delay=pipeline_cfg.retry_delay,
                 is_unsafe=is_unsafe,
+                reasoning_truncated=reasoning_truncated,
             )
         except BillingQuotaError as e:
             console.print(f"[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
@@ -713,8 +719,11 @@ def process_breadth_first(
         reasoning_text = entry.messages[reasoning_idx]["content"]
         if not reasoning_text.strip():
             return "skipped"
+        reasoning_truncated = False
         if pipeline_cfg.max_reasoning_chars is not None:
-            reasoning_text = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
+            cropped = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
+            reasoning_truncated = len(cropped) < len(reasoning_text)
+            reasoning_text = cropped
 
         user_prompt = _find_user_msg(entry)
         assistant_content = _find_assistant_msg(entry)
@@ -728,6 +737,7 @@ def process_breadth_first(
                 len(format_prompt(
                     prompt_template, user_prompt, reasoning_text, response_text,
                     pipeline_cfg.response_sentences,
+                    reasoning_truncated=reasoning_truncated,
                 ))
             ) // 4
             max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
@@ -759,6 +769,7 @@ def process_breadth_first(
                 max_retries=pipeline_cfg.max_retries,
                 retry_delay=pipeline_cfg.retry_delay,
                 is_unsafe=is_unsafe,
+                reasoning_truncated=reasoning_truncated,
             )
         except BillingQuotaError:
             console.print("[bold red]  Billing quota exceeded — stopping judge.[/bold red]")
@@ -905,6 +916,9 @@ def run_pipeline(
         sp_path = config.resolve_path(config_path, config.system_prompt_file)
         if sp_path.exists():
             system_prompt_text = inject_taxonomy(sp_path.read_text(encoding="utf-8"))
+            system_prompt_text = system_prompt_text.replace(
+                "{response_sentences}", str(config.pipeline.response_sentences)
+            )
 
     # Set up token budget (daily token limit for OpenAI-style billing)
     token_budget: TokenBudget | None = None

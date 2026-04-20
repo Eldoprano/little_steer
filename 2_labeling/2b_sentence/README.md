@@ -115,25 +115,37 @@ for f in sorted(os.listdir('/tmp/test_labeling_output')):
 
 ## Multi-judge runs
 
-All labeling runs — including comparisons across multiple judges — are configured in **YAML files**, not in Python code.
+All labeling runs are configured in **YAML files**, not in Python code.
+
+### `labelers.yaml` — the main registry
+
+`labelers.yaml` is the single source of truth for all production labelers. It defines shared defaults and one entry per labeler. Set `enabled: false` to disable a labeler without removing it.
+
+```bash
+# Run all enabled labelers in parallel (recommended for production)
+uv run run_all.py ../../data/1_generated/
+
+# Run all enabled labelers sequentially
+uv run run.py --config labelers.yaml ../../data/1_generated/
+
+# Run a specific labeler from the registry (works even if enabled: false)
+uv run run.py --config labelers.yaml --judge gpt-5.4-mini ../../data/1_generated/
+
+# Check dashboard status of a running batch
+uv run run_all.py status
+```
+
+### `compare_api.yaml` — judge comparison
 
 ```bash
 # Run all judges in compare_api.yaml through the full pipeline
 uv run run.py --config compare_api.yaml ../../data/1_generated/
-
-# Comparison mode: sample 1 entry per file, run all judges, write merged JSON
-uv run run.py --config compare_api.yaml --compare-output ../../data/1_generated/
-
-# Override seed and sample size
-uv run run.py --config compare_api.yaml --compare-output --seed 99 --sample 3 ../../data/1_generated/
 
 # Only run specific judges from a config
 uv run run.py --config compare_api.yaml --judge gpt-5-mini ../../data/1_generated/
 ```
 
 In multi-judge pipeline mode each judge writes its results to its own sub-directory under the output dir (e.g. `data/labeled/gpt-5-mini/`).
-
-In comparison mode (`--compare-output`) a merged `comparison_seed<N>_<timestamp>.json` is also written, readable by `view_comparison.py`.
 
 ## Configuration
 
@@ -192,14 +204,77 @@ output:
   comparison_json: false    # or set via --compare-output flag
 ```
 
+## Adding a new labeler
+
+All labelers live in `labelers.yaml`. To add a new one:
+
+**1. Add an entry to `labelers.yaml`** under the appropriate provider section. Only include fields that differ from `defaults:`:
+
+```yaml
+- enabled: true
+  judge:
+    name: my-model
+    model_id: provider/my-model-id
+    backend: openrouter          # openai | gemini | openrouter | nvidia | custom
+    api_key_source: openrouter-api-key
+    timeout: 300
+    rpm: 20
+    rpd: 167
+  pipeline:
+    max_reasoning_chars: 4000
+    request_state_file: "_artifacts/my_model_request_state.json"
+  output:
+    suffix: "_my-model"
+```
+
+Fields inherited from `defaults:` (no need to repeat): `secrets_file`, `prompt_file`, `system_prompt_file`, `judge.temperature`, `judge.timeout`, `pipeline.max_workers/retries/retry_delay/checkpoint_every/...`, all `mapper` fields, `output.dir/in_place`.
+
+**Budget configuration** — add to `pipeline:` as needed:
+
+```yaml
+# Token budget (OpenAI-style billing):
+token_budget: 2500000
+budget_state_file: "_artifacts/my_model_token_budget.json"
+
+# Request budget (rate-limited free tiers):
+request_state_file: "_artifacts/my_model_request_state.json"
+```
+
+**2. Add the API key** to `.secrets.json` if not already present.
+
+**3. Test with a single sample:**
+
+```bash
+python3 -c "
+import json
+with open('../../data/1_generated/deepseek-r1-distill-llama-8b-heretic_clear_harm.jsonl') as f:
+    line = f.readline()
+with open('/tmp/test_sample.jsonl', 'w') as out:
+    out.write(line)
+"
+
+uv run run.py --config labelers.yaml --judge my-model /tmp/test_sample.jsonl
+```
+
+`run_all.py` picks up any enabled labeler automatically on the next run.
+
+### Backend-specific notes
+
+- **OpenAI:** `backend: openai`, use `token_budget`
+- **Gemini:** `backend: gemini` — base URL resolved automatically
+- **NVIDIA free inference:** `backend: nvidia` — base URL (`https://integrate.api.nvidia.com/v1`) resolved automatically
+- **OpenRouter:** `backend: openrouter` — base URL resolved automatically; use `rpm`/`rpd` for rate limits
+- **LMStudio (local):** `backend: custom`, `base_url: http://localhost:1234/v1`, add `lmstudio_prompt: true`
+- **Other providers:** `backend: custom` with a `base_url` pointing to an OpenAI-compatible endpoint
+
 Available configs:
 
-| Config               | Purpose                                  |
-|----------------------|------------------------------------------|
-| `config.yaml`        | Single Gemini judge (default)            |
-| `lmstudio.yaml`      | Single local model via LMStudio          |
-| `compare_api.yaml`   | Multi-judge: GPT + Gemini (cloud APIs)   |
-| `compare_local.yaml` | Multi-judge: local models via LMStudio   |
+| Config              | Purpose                                       |
+|---------------------|-----------------------------------------------|
+| `labelers.yaml`     | **Main registry** — all production labelers   |
+| `config.yaml`       | Single Gemini judge (default for quick runs)  |
+| `compare_api.yaml`  | Multi-judge comparison: GPT + Gemini          |
+| `compare_local.yaml`| Multi-judge: local LMStudio models            |
 
 ## Output format
 
@@ -244,8 +319,8 @@ uv run run.py --reset-checkpoints ../../data/1_generated/
 | `sentence_labeler/mapper.py` | Maps LLM sentence outputs back to character spans |
 | `sentence_labeler/schema.py` | Pydantic config and output models |
 | `prompt.md` | LLM judge prompt template |
+| `labelers.yaml` | **Main labeler registry** — all production labelers with shared defaults |
 | `config.yaml` | Default config (single Gemini judge) |
-| `lmstudio.yaml` | Local model config |
 | `compare_api.yaml` | Multi-judge: cloud API models |
 | `compare_local.yaml` | Multi-judge: local LMStudio models |
 | `AGENTS.md` | Developer & AI agent conventions |

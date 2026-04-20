@@ -22,7 +22,7 @@ pipeline:
   retry_delay: 2.0               # base seconds between retries (exponential: delay * 2^attempt)
   checkpoint_every: 10           # write checkpoint after every N successfully labeled entries
   max_workers: 4                 # concurrent LLM calls (thread pool)
-  response_sentences: 5          # how many sentences of assistant response to include in prompt
+  response_sentences: 10         # how many sentences of assistant response to include in prompt
   skip_no_reasoning: true        # skip entries without a "reasoning" message
   skip_no_response: false        # skip entries without an "assistant" message
   overwrite_existing: false      # if false, skip entries that already have annotations

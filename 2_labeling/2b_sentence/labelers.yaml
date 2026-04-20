@@ -23,7 +23,7 @@ defaults:
     max_retries: 2
     retry_delay: 15.0
     checkpoint_every: 10
-    response_sentences: 5
+    response_sentences: 10
     skip_no_reasoning: true
     skip_no_response: false
     overwrite_existing: false

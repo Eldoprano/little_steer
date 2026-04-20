@@ -5,7 +5,7 @@ You are an expert analyst of LLM reasoning. Your task is to annotate each senten
 You will receive:
 1. `USER_PROMPT`: The user's message.
 2. `MODEL_REASONING`: Contains the `<think>...</think>` block.
-3. `MODEL_FINAL_RESPONSE`: The first 5 sentences of the final output.
+3. `MODEL_FINAL_RESPONSE`: The first {response_sentences} sentences of the final output.
 
 Annotate ONLY the sentences inside the `<think>` block. Process every sentence in order. Do not skip or invent sentences. Do not treat standalone list markers, numbering tokens (e.g., `1.`, `2.`, `-`, `*`), or isolated punctuation as separate sentences; merge them with their associated content.
 

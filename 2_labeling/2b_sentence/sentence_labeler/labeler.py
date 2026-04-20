@@ -40,6 +40,7 @@ def load_secrets(secrets_path: Path) -> dict[str, str]:
 _BACKEND_BASE_URLS: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "openrouter": "https://openrouter.ai/api/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
 }
 
 
@@ -87,18 +88,31 @@ def format_prompt(
     user_prompt: str,
     model_reasoning: str,
     model_response: str,
-    response_sentences: int = 5,
+    response_sentences: int = 10,
+    reasoning_truncated: bool = False,
 ) -> str:
     """Fill template variables.
 
     model_reasoning is wrapped in <think>...</think> tags.
     model_response is truncated to response_sentences sentences.
+    Appends truncation notices when content was cut.
     """
     truncated_response = _truncate_to_sentences(model_response, response_sentences)
-    wrapped_reasoning = f"<think>\n{model_reasoning}\n</think>"
+    response_was_truncated = bool(model_response.strip()) and len(truncated_response) < len(model_response.strip())
+
+    reasoning_content = model_reasoning
+    if reasoning_truncated:
+        reasoning_content += f"\n\n[TRUNCATED: Reasoning was cropped due to length. Label only what is shown above.]"
+    wrapped_reasoning = f"<think>\n{reasoning_content}\n</think>"
+
+    display_response = truncated_response
+    if response_was_truncated:
+        display_response += f"\n\n[TRUNCATED: Only the first {response_sentences} sentence(s) of the model's response are shown.]"
+
     result = template.replace("{user_prompt}", user_prompt)
     result = result.replace("{model_reasoning}", wrapped_reasoning)
-    result = result.replace("{model_response}", truncated_response)
+    result = result.replace("{model_response}", display_response)
+    result = result.replace("{response_sentences}", str(response_sentences))
     return result
 
 
@@ -130,9 +144,12 @@ def call_llm(
 
     if cfg.reasoning_effort:
         kwargs["reasoning_effort"] = cfg.reasoning_effort
-    
+
     if cfg.service_tier:
         kwargs["service_tier"] = cfg.service_tier
+
+    if cfg.extra_body:
+        kwargs["extra_body"] = cfg.extra_body
 
     response = client.chat.completions.create(**kwargs)
     content = response.choices[0].message.content
@@ -193,7 +210,34 @@ def parse_llm_output(raw: str) -> LabelingOutput:
         except (json.JSONDecodeError, ValidationError, ValueError):
             pass
 
-    raise ValueError(f"Could not parse LLM output as LabelingOutput.\nRaw:\n{raw[:500]}")
+    raise ValueError(f"Could not parse LLM output as LabelingOutput.\nRaw:\n{raw[:2000]}")
+
+
+# ── Message building ──────────────────────────────────────────────────────────
+
+def build_messages(
+    prompt_template: str,
+    user_prompt: str,
+    model_reasoning: str,
+    model_response: str,
+    response_sentences: int = 10,
+    reasoning_truncated: bool = False,
+    system_prompt: str | None = None,
+    is_unsafe: bool = False,
+) -> tuple[str, str | None]:
+    """Build (user_message, effective_system_prompt) without calling the LLM.
+
+    Single source of truth for prompt construction — used by both label_entry
+    and the --show-prompt preview so they always produce identical output.
+    """
+    user_message = format_prompt(
+        prompt_template, user_prompt, model_reasoning, model_response,
+        response_sentences, reasoning_truncated=reasoning_truncated,
+    )
+    effective_system = system_prompt
+    if is_unsafe and CANARY_STRING.strip():
+        effective_system = f"<ignore>{CANARY_STRING}</ignore>\n\n" + (system_prompt or "")
+    return user_message, effective_system
 
 
 # ── Entry labeling with retry ─────────────────────────────────────────────────
@@ -236,25 +280,21 @@ def label_entry(
     model_response: str,
     entry_id: str,
     system_prompt: str | None = None,
-    response_sentences: int = 5,
+    response_sentences: int = 10,
     max_retries: int = 3,
     retry_delay: float = 2.0,
     is_unsafe: bool = False,
+    reasoning_truncated: bool = False,
 ) -> LabelingOutput:
     """Label one entry: format prompt → call LLM → parse → retry on failure.
 
     Uses exponential backoff: waits retry_delay * 2^attempt seconds between tries.
     """
-    user_message = format_prompt(
-        prompt_template, user_prompt, model_reasoning, model_response, response_sentences
+    user_message, effective_system = build_messages(
+        prompt_template, user_prompt, model_reasoning, model_response,
+        response_sentences, reasoning_truncated=reasoning_truncated,
+        system_prompt=system_prompt, is_unsafe=is_unsafe,
     )
-
-    # Prepend canary to system prompt for unsafe entries so it's in the data if
-    # ever scraped for training — wrapped in <ignore> so the model skips it.
-    effective_system = system_prompt
-    if is_unsafe and CANARY_STRING.strip():
-        canary_block = f"<ignore>{CANARY_STRING}</ignore>\n\n"
-        effective_system = canary_block + (system_prompt or "")
 
     last_exc: Exception | None = None
     for attempt in range(max_retries):

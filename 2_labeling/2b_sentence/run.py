@@ -45,13 +45,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from sentence_labeler.labeler import (
     build_client,
+    build_messages,
     call_llm,
-    format_prompt,
     load_secrets,
     parse_llm_output,
 )
 from sentence_labeler.pipeline import apply_labeling_output, run_pipeline
-from sentence_labeler.schema import JudgeConfig, LabelerConfig, LabelingOutput
+from sentence_labeler.schema import JudgeConfig, LabelerConfig, LabelerRegistry, LabelingOutput
+from sentence_labeler.taxonomy_loader import inject_taxonomy
 
 console = Console()
 
@@ -103,6 +104,78 @@ def _resolve_files(
         paths.update(x.resolve() for x in expanded if x.suffix == ".jsonl")
 
     return sorted(paths)
+
+
+# ── Prompt preview ────────────────────────────────────────────────────────────
+
+def _show_prompt(
+    input_files: list[Path],
+    cfg: LabelerConfig,
+    config_path: Path,
+) -> None:
+    """Format and print the prompt for the first valid entry without calling the LLM."""
+    from thesis_schema import ConversationEntry
+
+    prompt_path = cfg.resolve_path(config_path, cfg.prompt_file)
+    prompt_template = inject_taxonomy(prompt_path.read_text(encoding="utf-8"))
+
+    system_prompt_text: str | None = None
+    if cfg.system_prompt_file:
+        sp_path = cfg.resolve_path(config_path, cfg.system_prompt_file)
+        if sp_path.exists():
+            system_prompt_text = inject_taxonomy(sp_path.read_text(encoding="utf-8"))
+            system_prompt_text = system_prompt_text.replace(
+                "{response_sentences}", str(cfg.pipeline.response_sentences)
+            )
+
+    # Collect all valid entries (with reasoning) across all files, then pick one at random
+    candidates: list[tuple[ConversationEntry, Path]] = []
+    for fpath in input_files:
+        with open(fpath) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    candidate = ConversationEntry.model_validate_json(line)
+                    if any(m["role"] == "reasoning" for m in candidate.messages):
+                        candidates.append((candidate, fpath))
+                except Exception:
+                    continue
+
+    if not candidates:
+        console.print("[red]No entry with reasoning found in the provided files.[/red]")
+        return
+
+    entry, source_file = random.choice(candidates)
+
+    console.print(f"[dim]Showing prompt for entry [bold]{entry.id}[/bold] from {source_file.name}[/dim]")
+
+    reasoning_text = next(m["content"] for m in entry.messages if m["role"] == "reasoning")
+    original_len = len(reasoning_text)
+    reasoning_truncated = False
+    if cfg.pipeline.max_reasoning_chars is not None:
+        reasoning_text = _crop_reasoning(reasoning_text, cfg.pipeline.max_reasoning_chars)
+        reasoning_truncated = len(reasoning_text) < original_len
+
+    user_prompt = next((m["content"] for m in entry.messages if m["role"] == "user"), "")
+    response_text = next((m["content"] for m in entry.messages if m["role"] == "assistant"), "")
+
+    is_unsafe = entry.metadata.get("prompt_safety") == "unsafe"
+    user_message, effective_system = build_messages(
+        prompt_template, user_prompt, reasoning_text, response_text,
+        cfg.pipeline.response_sentences, reasoning_truncated=reasoning_truncated,
+        system_prompt=system_prompt_text, is_unsafe=is_unsafe,
+    )
+
+    if effective_system:
+        console.rule("[bold cyan]SYSTEM PROMPT[/bold cyan]")
+        console.print(effective_system)
+    console.rule("[bold cyan]USER PROMPT[/bold cyan]")
+    console.print(user_message)
+    console.rule()
+    if reasoning_truncated:
+        console.print(f"[yellow]Reasoning was truncated from {original_len} → {len(reasoning_text)} chars[/yellow]")
 
 
 # ── Pipeline runner (multi-judge) ──────────────────────────────────────────────
@@ -210,6 +283,11 @@ def run_multi_judge(
     help="Stop after labeling this many entries per judge (across all files). "
          "Useful for test runs (e.g. --max-entries 1).",
 )
+@click.option(
+    "--show-prompt",
+    is_flag=True, default=False,
+    help="Print the formatted prompt for the first valid entry and exit (no LLM call).",
+)
 def main(
     files: tuple[str, ...],
     config: str | None,
@@ -222,6 +300,7 @@ def main(
     reset_checkpoints: bool,
     token_budget: int | None,
     max_entries: int | None,
+    show_prompt: bool,
 ) -> None:
     """Label reasoning sentences in JSONL files using one or more LLM judges.
 
@@ -250,6 +329,89 @@ def main(
         console.print(f"[red]Config file not found: {config_path}[/red]")
         raise SystemExit(1)
 
+    # Resolve input files
+    input_files = _resolve_files(files, glob_patterns)
+
+    if not input_files and not dry_run and not show_prompt:
+        console.print(
+            "[yellow]No input files found. "
+            "Pass .jsonl paths as arguments or use --glob.[/yellow]"
+        )
+        raise SystemExit(0)
+
+    # --show-prompt: preview the formatted prompt for the first entry and exit
+    if show_prompt:
+        cfg = LabelerConfig.from_yaml(config_path)
+        _show_prompt(input_files, cfg, config_path)
+        raise SystemExit(0)
+
+    # ── Registry file (labelers.yaml) ────────────────────────────────────────
+    if LabelerRegistry.is_registry_file(config_path):
+        registry = LabelerRegistry.from_yaml(config_path)
+
+        # When --judge is given, look up even disabled entries so the user can
+        # explicitly run any labeler regardless of its enabled flag.
+        if judge_filter:
+            try:
+                labeler_cfgs = [(name, registry.get_config(name)) for name in judge_filter]
+            except KeyError as e:
+                all_names = [e.get("judge", {}).get("name") for e in registry._entries]
+                console.print(f"[red]{e}[/red]")
+                console.print(f"Available: {[n for n in all_names if n]}")
+                raise SystemExit(1)
+        else:
+            labeler_cfgs = registry.all_configs(enabled_only=True)
+
+        if not labeler_cfgs:
+            console.print("[yellow]No enabled labelers found in registry.[/yellow]")
+            raise SystemExit(0)
+
+        console.print(
+            f"[bold]run.py[/bold] — "
+            f"config: [dim]{config_path.name}[/dim] (registry) — "
+            f"judges: [cyan]{', '.join(n for n, _ in labeler_cfgs)}[/cyan] — "
+            f"{len(input_files)} file(s)"
+        )
+        console.print()
+
+        for judge_name, labeler_cfg in labeler_cfgs:
+            # Apply CLI overrides to each labeler's config independently
+            if output_dir is not None:
+                labeler_cfg.output.dir = output_dir
+            if workers is not None:
+                labeler_cfg.pipeline.max_workers = workers
+            if retries is not None:
+                labeler_cfg.pipeline.max_retries = retries
+            if token_budget is not None:
+                labeler_cfg.pipeline.token_budget = token_budget
+            if max_entries is not None:
+                labeler_cfg.pipeline.max_entries = max_entries
+
+            judge = labeler_cfg.judges[0]
+            console.rule(f"[bold blue]Judge: {judge.name}[/bold blue]")
+
+            if judge.lmstudio_prompt and not dry_run:
+                console.print(
+                    f"\n[bold yellow]>>> LMStudio model required:[/bold yellow] "
+                    f"[cyan]{judge.name}[/cyan]\n"
+                    f"    Load/swap to this model in LMStudio then press Enter.",
+                    highlight=False,
+                )
+                input()
+
+            run_pipeline(
+                input_files=input_files,
+                config=labeler_cfg,
+                config_path=config_path,
+                console=console,
+                reset_checkpoints=reset_checkpoints,
+                dry_run=dry_run,
+                judge_cfg=judge,
+            )
+            console.print()
+        return
+
+    # ── Standard single/multi-judge config ───────────────────────────────────
     cfg = LabelerConfig.from_yaml(config_path)
 
     # Apply CLI overrides
@@ -274,9 +436,6 @@ def main(
     else:
         active_judges = cfg.judges
 
-    # Resolve input files
-    input_files = _resolve_files(files, glob_patterns)
-
     multi = len(active_judges) > 1
     console.print(
         f"[bold]run.py[/bold] — "
@@ -286,14 +445,6 @@ def main(
     )
     console.print()
 
-    if not input_files and not dry_run:
-        console.print(
-            "[yellow]No input files found. "
-            "Pass .jsonl paths as arguments or use --glob.[/yellow]"
-        )
-        raise SystemExit(0)
-
-    # ── Standard pipeline mode ──────────────────────────────────────────────
     run_multi_judge(
         input_files=input_files,
         cfg=cfg,

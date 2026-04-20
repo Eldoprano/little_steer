@@ -190,6 +190,7 @@ class JudgeConfig(BaseModel):
     lmstudio_prompt: bool = False
     rpm: int | None = None  # requests per minute limit for this judge; null = no limit
     rpd: int | None = None  # requests per day limit for this judge; null = no limit
+    extra_body: dict | None = None  # extra fields merged into the API request body (e.g. OpenRouter transforms)
 
 
 class PipelineConfig(BaseModel):
@@ -197,7 +198,7 @@ class PipelineConfig(BaseModel):
     retry_delay: float = 2.0
     checkpoint_every: int = 10
     max_workers: int = 4
-    response_sentences: int = 5
+    response_sentences: int = 10
     skip_no_reasoning: bool = True
     skip_no_response: bool = False
     overwrite_existing: bool = False
@@ -264,3 +265,83 @@ class LabelerConfig(BaseModel):
     def resolve_path(self, config_path: Path, relative: str) -> Path:
         """Resolve a path that is relative to the config file's directory."""
         return (config_path.parent / relative).resolve()
+
+
+# ── Registry (labelers.yaml) ──────────────────────────────────────────────────
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base, returning a new dict."""
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+class LabelerRegistry:
+    """Loads labelers.yaml — a single file with shared defaults and a list of labelers.
+
+    Each entry under ``labelers:`` is deep-merged with ``defaults:`` to produce
+    a complete ``LabelerConfig``.  Set ``enabled: false`` on an entry to exclude
+    it from ``all_configs(enabled_only=True)`` without removing it.
+    """
+
+    def __init__(self, data: dict, path: Path):
+        self._path = path
+        self._defaults: dict = data.get("defaults", {})
+        self._entries: list[dict] = data.get("labelers", [])
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "LabelerRegistry":
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        if "labelers" not in data:
+            raise ValueError(
+                f"{path} is not a labelers registry file (missing 'labelers:' key)"
+            )
+        return cls(data, path)
+
+    @staticmethod
+    def is_registry_file(path: Path) -> bool:
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+            return isinstance(data, dict) and "labelers" in data
+        except Exception:
+            return False
+
+    def _merged_entry(self, entry: dict) -> dict:
+        merged = _deep_merge(self._defaults, entry)
+        merged.pop("enabled", None)
+        return merged
+
+    def get_config(self, name: str) -> "LabelerConfig":
+        for entry in self._entries:
+            judge = entry.get("judge", {})
+            if judge.get("name") == name:
+                return LabelerConfig.model_validate(self._merged_entry(entry))
+        raise KeyError(f"Labeler '{name}' not found in registry")
+
+    def all_configs(self, enabled_only: bool = True) -> list[tuple[str, "LabelerConfig"]]:
+        """Return list of (name, LabelerConfig) for each labeler."""
+        result = []
+        for entry in self._entries:
+            if enabled_only and not entry.get("enabled", True):
+                continue
+            name = entry.get("judge", {}).get("name", "unknown")
+            result.append((name, LabelerConfig.model_validate(self._merged_entry(entry))))
+        return result
+
+    def all_entries(self, enabled_only: bool = True) -> list[dict]:
+        """Return merged raw dicts — useful for metadata extraction without full validation."""
+        result = []
+        for entry in self._entries:
+            if enabled_only and not entry.get("enabled", True):
+                continue
+            result.append(self._merged_entry(entry))
+        return result
+
+    def resolve_path(self, relative: str) -> Path:
+        return (self._path.parent / relative).resolve()
