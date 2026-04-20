@@ -3,14 +3,20 @@
 
 {% block content %}
 <!-- ── Top navigation ───────────────────────────────────────── -->
-<a href="/" class="back-link">← All entries</a>
+<div class="entry-topbar">
+  <a href="/" class="back-link">← All entries</a>
+  <button class="btn-toggle-filters" id="btn-toggle-filters" onclick="toggleFilters()" title="Toggle filters">
+    <span id="filter-toggle-icon">▲</span> Filters
+  </button>
+</div>
 
 <!-- ── Info bar ─────────────────────────────────────────────── -->
+<div class="collapsible-header" id="collapsible-header">
 <div class="info-bar">
   <div class="info-badges">
     <span class="badge badge-model" title="{{ entry.model }}">{{ entry.model }}</span>
     <span class="badge badge-judge" title="{{ entry.judge }}">labeler: {{ entry.judge }}</span>
-    <span class="badge badge-dataset" title="{{ entry.source_file }}">{{ entry.source_file }}</span>
+    <span class="badge badge-dataset" title="{{ entry.source_file }}">{{ entry._dataset_name or entry.source_file }}</span>
     {% if assessment.trajectory %}
     <span class="traj-badge" style="background:{{ {
       'safe_throughout': 'var(--green)', 'concern_then_refuse': 'var(--yellow)',
@@ -79,19 +85,20 @@
     </div>
   </div>
 
-  <!-- Behavior filter chips (shown in behavior mode) -->
+  <!-- Behavior filter chips (shown in behavior mode, individual labels) -->
   <div class="controls-row" id="behavior-filter-row">
     <span class="controls-label">Show</span>
     <div class="behavior-chips">
-      {% for gid in used_groups %}
-      {% set gc = label_groups[gid] %}
+      {% for lid in used_labels %}
+      {% set ldata = all_labels[lid] %}
       <button class="behavior-chip behavior-chip--active"
-              data-group="{{ gid }}"
-              style="--chip-bg:{{ gc.color }};--chip-border:{{ gc.border }};--chip-text:{{ gc.text }}"
-              onclick="toggleGroup('{{ gid }}', this)">
-        <span class="chip-dot" style="background:{{ gc.border }}"></span>
-        {{ gc.name }}
-        <span class="chip-count">{{ group_counts.get(gid, 0) }}</span>
+              data-label="{{ lid }}"
+              data-group="{{ ldata.group_id }}"
+              style="--chip-bg:{{ ldata.color }};--chip-border:{{ ldata.border }};--chip-text:{{ ldata.text }}"
+              onclick="toggleLabel('{{ lid }}', this)">
+        <span class="chip-dot" style="background:{{ ldata.border }}"></span>
+        {{ ldata.name }}
+        <span class="chip-count">{{ label_counts.get(lid, 0) }}</span>
       </button>
       {% endfor %}
       <button class="chip-ctrl" onclick="toggleAll(true)">All</button>
@@ -100,6 +107,7 @@
   </div>
 </div>
 {% endif %}
+</div><!-- end collapsible-header -->
 
 <!-- ── Custom tooltip ───────────────────────────────────────── -->
 <div id="ann-tooltip" class="ann-tooltip" style="display:none" aria-hidden="true">
@@ -108,8 +116,19 @@
   <div id="tt-score" class="tt-score"></div>
 </div>
 
-<!-- ── Conversation ─────────────────────────────────────────── -->
-<div class="conversation">
+<!-- ── Compare panel ─────────────────────────────────────────── -->
+<div class="compare-panel" id="compare-panel">
+  <span class="compare-label">Compare with:</span>
+  <div class="compare-chips" id="compare-chips">
+    <span class="compare-loading" id="compare-loading">Loading…</span>
+  </div>
+</div>
+
+<!-- ── Multi-pane comparison grid ────────────────────────────── -->
+<div class="compare-grid" id="compare-grid"></div>
+
+<!-- ── Single-entry conversation (shown when no compare panels open) ── -->
+<div class="conversation" id="main-conversation">
 
   <!-- User message -->
   <div class="chat-turn">
@@ -126,7 +145,7 @@
       <span class="turn-role turn-role--thinking">Thinking</span>
       <span class="turn-meta">{{ annotations | length }} annotated sentences</span>
     </div>
-    <div class="turn-body turn-body--thinking" id="reasoning-body">{{ reasoning_html | safe }}</div>
+    <div class="turn-body turn-body--thinking sync-scroll" id="reasoning-body" data-source="{{ entry.source_file }}">{{ reasoning_html | safe }}</div>
   </div>
   {% endif %}
 
@@ -148,7 +167,11 @@
 <script>
 // Data injected from server
 const GROUP_META   = {{ label_groups | tojson }};
+const ALL_LABEL_META = {{ all_labels | tojson }};
 const USED_GROUPS  = {{ used_groups | tojson }};
+const USED_LABELS  = {{ used_labels | tojson }};
+const ENTRY_ID     = {{ entry.id | tojson }};
+const ENTRY_SOURCE = {{ entry.source_file | tojson }};
 
 // Build label → group lookup from GROUP_META
 const LABEL_TO_GROUP = {};
@@ -156,10 +179,21 @@ Object.entries(GROUP_META).forEach(([gid, gc]) => {
   (gc.labels || []).forEach(lbl => { LABEL_TO_GROUP[lbl] = gid; });
 });
 
-// State
+// State: active labels (individual), null = all active
 let colorMode    = 'behavior';
-let activeGroups = new Set(USED_GROUPS);
-let allActive    = true;  // tracks whether we're in "all selected" state
+let activeLabels = new Set(USED_LABELS);   // track by label ID
+let activeGroups = new Set(USED_GROUPS);   // derived from activeLabels
+let allActive    = true;
+
+// ── Collapsible filter header ────────────────────────────────
+let filtersVisible = true;
+function toggleFilters() {
+  filtersVisible = !filtersVisible;
+  const header = document.getElementById('collapsible-header');
+  const icon = document.getElementById('filter-toggle-icon');
+  header.style.display = filtersVisible ? '' : 'none';
+  icon.textContent = filtersVisible ? '▲' : '▼';
+}
 
 // ── Theme-aware group colors ──────────────────────────────────
 function getGroupColors(gid) {
@@ -174,36 +208,39 @@ function getGroupColors(gid) {
 
 // ── Update behavior chip CSS variables for current theme ──────
 function updateChipThemeColors() {
-  document.querySelectorAll('.behavior-chip[data-group]').forEach(chip => {
-    const c = getGroupColors(chip.dataset.group);
-    chip.style.setProperty('--chip-bg',     c.color);
-    chip.style.setProperty('--chip-border', c.border);
-    chip.style.setProperty('--chip-text',   c.text);
+  const dark = document.documentElement.dataset.theme === 'dark';
+  document.querySelectorAll('.behavior-chip[data-label]').forEach(chip => {
+    const ldata = ALL_LABEL_META[chip.dataset.label] || {};
+    chip.style.setProperty('--chip-bg',     dark ? (ldata.dark_color  || ldata.color)  : ldata.color);
+    chip.style.setProperty('--chip-border', dark ? (ldata.dark_border || ldata.border) : ldata.border);
+    chip.style.setProperty('--chip-text',   dark ? (ldata.dark_text   || ldata.text)   : ldata.text);
   });
 }
 
 // ── Score → background color ──────────────────────────────────
 function scoreToRgb(score) {
   const s = Math.max(-5, Math.min(5, parseFloat(score) || 0));
+  // Use 25% minimum opacity so colors are distinguishable from neutral bg
   if (s > 0) {
-    const p = (s / 5) * 100;
-    return `color-mix(in srgb, var(--green) ${p}%, var(--bg-1))`;
+    const p = 25 + (s / 5) * 65;
+    return `color-mix(in srgb, var(--green) ${p}%, var(--bg-2))`;
   } else if (s < 0) {
-    const p = (-s / 5) * 100;
-    return `color-mix(in srgb, var(--red) ${p}%, var(--bg-1))`;
+    const p = 25 + (-s / 5) * 65;
+    return `color-mix(in srgb, var(--red) ${p}%, var(--bg-2))`;
   }
-  return 'var(--bg-1)';
+  return 'var(--bg-2)';
 }
 
-// ── Apply current mode + filter to all spans ──────────────────
-function applyVisualization() {
-  document.querySelectorAll('.ann-span').forEach(span => {
+// ── Apply current mode + filter to all spans in a container ──
+function applyVisualizationIn(container) {
+  container.querySelectorAll('.ann-span').forEach(span => {
     const group      = span.dataset.group || USED_GROUPS[0];
-    const groupsRaw  = span.dataset.groups || group;
-    const spanGroups = groupsRaw.split(',').filter(Boolean);
+    const labelsRaw  = span.dataset.labels || '';
+    const spanLabels = labelsRaw.split(',').filter(Boolean);
     const score      = span.dataset.score;
 
-    const isActive = spanGroups.some(g => activeGroups.has(g));
+    // A span is active if any of its labels are active
+    const isActive = allActive || spanLabels.some(l => activeLabels.has(l));
     if (!isActive) {
       span.style.background   = 'transparent';
       span.style.border       = 'none';
@@ -231,6 +268,12 @@ function applyVisualization() {
   });
 }
 
+function applyVisualization() {
+  document.querySelectorAll('.turn-body--thinking, .compare-reasoning').forEach(el => {
+    applyVisualizationIn(el);
+  });
+}
+
 // ── Mode switch ───────────────────────────────────────────────
 function setMode(mode) {
   colorMode = mode;
@@ -245,32 +288,39 @@ function setMode(mode) {
   applyVisualization();
 }
 
-// ── Behavior group filter ─────────────────────────────────────
-// First click from "all active" state isolates to that group.
-// Subsequent clicks toggle individual groups.
-function toggleGroup(gid, btn) {
+// ── Behavior label filter ─────────────────────────────────────
+function toggleLabel(lid, btn) {
   if (allActive) {
-    // Isolate: activate only this group
-    activeGroups = new Set([gid]);
+    // Isolate to this label
+    activeLabels = new Set([lid]);
     allActive = false;
     document.querySelectorAll('.behavior-chip').forEach(b => {
-      b.classList.toggle('behavior-chip--active', b.dataset.group === gid);
+      b.classList.toggle('behavior-chip--active', b.dataset.label === lid);
     });
-  } else if (activeGroups.has(gid)) {
-    activeGroups.delete(gid);
+  } else if (activeLabels.has(lid)) {
+    activeLabels.delete(lid);
     btn.classList.remove('behavior-chip--active');
-    if (activeGroups.size === USED_GROUPS.length) allActive = true;
+    if (activeLabels.size === USED_LABELS.length) allActive = true;
   } else {
-    activeGroups.add(gid);
+    activeLabels.add(lid);
     btn.classList.add('behavior-chip--active');
-    if (activeGroups.size === USED_GROUPS.length) allActive = true;
+    if (activeLabels.size === USED_LABELS.length) allActive = true;
   }
+  // Update derived activeGroups
+  activeGroups = new Set([...activeLabels].map(l => LABEL_TO_GROUP[l]).filter(Boolean));
   applyVisualization();
 }
 
 function toggleAll(enable) {
-  USED_GROUPS.forEach(g => enable ? activeGroups.add(g) : activeGroups.delete(g));
-  allActive = enable && USED_GROUPS.length > 0;
+  if (enable) {
+    USED_LABELS.forEach(l => activeLabels.add(l));
+    USED_GROUPS.forEach(g => activeGroups.add(g));
+    allActive = USED_LABELS.length > 0;
+  } else {
+    activeLabels.clear();
+    activeGroups.clear();
+    allActive = false;
+  }
   document.querySelectorAll('.behavior-chip').forEach(btn =>
     btn.classList.toggle('behavior-chip--active', enable)
   );
@@ -282,28 +332,32 @@ const tooltip  = document.getElementById('ann-tooltip');
 const ttLabels = document.getElementById('tt-labels');
 const ttScore  = document.getElementById('tt-score');
 
-document.querySelectorAll('.ann-span').forEach(span => {
-  span.addEventListener('mouseenter', e => {
-    const labelsRaw = span.dataset.labels || '';
-    const labels    = labelsRaw.split(',').filter(Boolean);
-    const score     = parseFloat(span.dataset.score || '0');
+function attachTooltips(container) {
+  container.querySelectorAll('.ann-span').forEach(span => {
+    if (span._tooltipAttached) return;
+    span._tooltipAttached = true;
+    span.addEventListener('mouseenter', e => {
+      const labelsRaw = span.dataset.labels || '';
+      const labels    = labelsRaw.split(',').filter(Boolean);
+      const score     = parseFloat(span.dataset.score || '0');
 
-    ttLabels.innerHTML = labels.map((l, i) => {
-      const gid = LABEL_TO_GROUP[l] || span.dataset.group;
-      const c   = getGroupColors(gid);
-      return `<span class="tt-chip" style="background:${c.color};border-color:${c.border};color:${c.text}">` +
-             `<span class="tt-num">${i + 1}.</span>${l}</span>`;
-    }).join('');
+      ttLabels.innerHTML = labels.map((l, i) => {
+        const gid = LABEL_TO_GROUP[l] || span.dataset.group;
+        const c   = getGroupColors(gid);
+        return `<span class="tt-chip" style="background:${c.color};border-color:${c.border};color:${c.text}">` +
+               `<span class="tt-num">${i + 1}.</span>${l}</span>`;
+      }).join('');
 
-    const sign = score >= 0 ? '+' : '';
-    ttScore.textContent = `Score: ${sign}${score}`;
-    tooltip.style.display = 'block';
-    moveTooltip(e);
+      const sign = score >= 0 ? '+' : '';
+      ttScore.textContent = `Score: ${sign}${score}`;
+      tooltip.style.display = 'block';
+      moveTooltip(e);
+    });
+
+    span.addEventListener('mousemove', moveTooltip);
+    span.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
   });
-
-  span.addEventListener('mousemove', moveTooltip);
-  span.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
-});
+}
 
 function moveTooltip(e) {
   const tw = tooltip.offsetWidth || 240;
@@ -327,6 +381,146 @@ if (assistantBody && assistantRaw && typeof marked !== 'undefined') {
   }
 }
 
+// ── Synchronized scrolling ────────────────────────────────────
+let syncScrolling = false;
+function setupSyncScroll() {
+  const scrollables = document.querySelectorAll('.sync-scroll');
+  scrollables.forEach(el => {
+    el.addEventListener('scroll', () => {
+      if (syncScrolling) return;
+      syncScrolling = true;
+      const ratio = el.scrollTop / (el.scrollHeight - el.clientHeight || 1);
+      scrollables.forEach(other => {
+        if (other !== el) {
+          other.scrollTop = ratio * (other.scrollHeight - other.clientHeight);
+        }
+      });
+      syncScrolling = false;
+    });
+  });
+}
+
+// ── Comparison mode ───────────────────────────────────────────
+let compareVersions = [];   // all available versions from server
+let openSources = new Set(); // source_files currently open in compare grid
+
+async function loadCompareVersions() {
+  const loading = document.getElementById('compare-loading');
+  try {
+    const res = await fetch(`/api/entry/${ENTRY_ID}/compare`);
+    compareVersions = await res.json();
+    renderCompareChips();
+  } catch (e) {
+    if (loading) loading.textContent = 'Failed to load';
+    return;
+  }
+  if (loading) loading.remove();
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function shortModel(m) {
+  const parts = (m || '').split('/');
+  const s = parts[parts.length - 1];
+  return s.length > 20 ? s.slice(0, 18) + '…' : s;
+}
+
+function renderCompareChips() {
+  const container = document.getElementById('compare-chips');
+  const others = compareVersions.filter(v => v.source_file !== ENTRY_SOURCE);
+  if (others.length === 0) {
+    container.innerHTML = '<span class="dim" style="font-size:0.82rem">No other labelers for this entry</span>';
+    return;
+  }
+  container.innerHTML = others.map(v => {
+    const label = v.judge || v.source_file;
+    const isOpen = openSources.has(v.source_file);
+    return `<button class="compare-chip ${isOpen ? 'compare-chip--open' : ''}"
+                    data-source="${escHtml(v.source_file)}"
+                    onclick="toggleComparePane('${escHtml(v.source_file)}')"
+                    title="Labeler: ${escHtml(v.judge)}&#10;Dataset: ${escHtml(v.dataset_name)}">
+              ${escHtml(shortModel(label))}
+              <span class="compare-chip-count">${v.n_annotations}</span>
+            </button>`;
+  }).join('');
+}
+
+function toggleComparePane(sourceFile) {
+  if (openSources.has(sourceFile)) {
+    openSources.delete(sourceFile);
+  } else {
+    openSources.add(sourceFile);
+  }
+  rebuildCompareGrid();
+  renderCompareChips();
+}
+
+function rebuildCompareGrid() {
+  const grid = document.getElementById('compare-grid');
+  const mainConv = document.getElementById('main-conversation');
+
+  if (openSources.size === 0) {
+    grid.innerHTML = '';
+    grid.style.display = 'none';
+    grid.style.height = '';
+    mainConv.style.display = '';
+    setupSyncScroll();
+    return;
+  }
+
+  // Hide single-entry view, show grid
+  mainConv.style.display = 'none';
+  grid.style.display = 'grid';
+
+  // Set grid height to fill viewport from its top position
+  requestAnimationFrame(() => {
+    const top = grid.getBoundingClientRect().top + window.scrollY;
+    const vh  = window.innerHeight;
+    const navH = document.querySelector('.navbar')?.offsetHeight || 56;
+    // Height from grid top to bottom of viewport, keeping 12px margin
+    const h = Math.max(300, vh - (top - window.scrollY) - 12);
+    grid.style.height = h + 'px';
+  });
+
+  // Determine grid columns: add 1 for the "current" entry
+  const totalPanes = openSources.size + 1;
+  const cols = Math.ceil(Math.sqrt(totalPanes * (window.innerWidth / window.innerHeight)));
+  const gridCols = Math.max(1, Math.min(cols, totalPanes));
+  grid.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+
+  // Build panes: current entry first, then open versions
+  const allPanes = [ENTRY_SOURCE, ...openSources];
+  grid.innerHTML = allPanes.map(sourceFile => {
+    const version = compareVersions.find(v => v.source_file === sourceFile);
+    if (!version) return '';
+    const labelName = version.judge || version.source_file;
+    const isCurrent = sourceFile === ENTRY_SOURCE;
+    const sign = version.avg_score >= 0 ? '+' : '';
+    return `<div class="compare-pane">
+      <div class="compare-pane-header">
+        <span class="badge badge-judge" title="${escHtml(version.judge)}">${escHtml(shortModel(labelName))}</span>
+        ${isCurrent ? '<span class="compare-current-tag">current</span>' : ''}
+        <span class="dim" style="font-size:0.75rem">${version.n_annotations} sentences · <span style="font-weight:600;color:${version.avg_score >= 0 ? 'var(--green)' : 'var(--red)'}">${sign}${version.avg_score.toFixed(1)}</span></span>
+        ${!isCurrent ? `<button class="compare-close" onclick="toggleComparePane('${escHtml(sourceFile)}')" title="Close">✕</button>` : ''}
+      </div>
+      <div class="compare-reasoning sync-scroll turn-body turn-body--thinking"
+           data-source="${escHtml(sourceFile)}">
+        ${version.reasoning_html || '<span class="dim">No reasoning</span>'}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Attach tooltips and visualization to all new spans
+  grid.querySelectorAll('.compare-pane').forEach(pane => {
+    attachTooltips(pane);
+    applyVisualizationIn(pane);
+  });
+
+  setupSyncScroll();
+}
+
 // ── Theme change handler ──────────────────────────────────────
 document.addEventListener('themechange', () => {
   updateChipThemeColors();
@@ -334,7 +528,10 @@ document.addEventListener('themechange', () => {
 });
 
 // Initial render
+attachTooltips(document.body);
 updateChipThemeColors();
 applyVisualization();
+loadCompareVersions();
+setupSyncScroll();
 </script>
 {% endblock %}

@@ -9,12 +9,14 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled" / "v5"
+_TAXONOMY_PATH = Path(__file__).parents[2] / "taxonomy.json"
+
+from sentence_labeler.taxonomy_loader import get_taxonomy_version
+
+_DEFAULT_DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled" / get_taxonomy_version()
 DATA_DIR: Path = Path(os.environ["VIEWER_DATA_DIR"]) if "VIEWER_DATA_DIR" in os.environ else _DEFAULT_DATA_DIR
 
 # ── Label group metadata (loaded from taxonomy.json) ─────────────────────────
-
-_TAXONOMY_PATH = Path(__file__).parents[2] / "taxonomy.json"
 
 
 def _build_label_groups() -> dict[str, dict[str, Any]]:
@@ -46,6 +48,30 @@ for gid, gdata in LABEL_GROUPS.items():
     for lbl in gdata["labels"]:
         LABEL_TO_GROUP[lbl] = gid
 
+# Flat dict of all label ids → {name, group_id, group_name, colors…}
+def _build_all_labels() -> dict[str, dict[str, Any]]:
+    with open(_TAXONOMY_PATH, encoding="utf-8") as f:
+        tax = json.load(f)
+    result: dict[str, dict[str, Any]] = {}
+    for group in tax["groups"]:
+        colors = group["colors"]
+        dark = colors.get("dark", colors["light"])
+        for label in group["labels"]:
+            result[label["id"]] = {
+                "name": label.get("display") or label.get("name") or label["id"],
+                "group_id": group["id"],
+                "group_name": group["name"],
+                "color": colors["light"]["bg"],
+                "border": colors["light"]["border"],
+                "text": colors["light"]["text"],
+                "dark_color": dark["bg"],
+                "dark_border": dark["border"],
+                "dark_text": dark["text"],
+            }
+    return result
+
+ALL_LABELS: dict[str, dict[str, Any]] = _build_all_labels()
+
 # Fallback is the last non-synthetic group
 _FALLBACK_GROUP = next(
     gid for gid in reversed(list(LABEL_GROUPS.keys()))
@@ -69,6 +95,11 @@ def _source_name(path: Path) -> str:
     return path.stem
 
 
+def _extract_dataset_name(path: Path, entry: dict[str, Any]) -> str:
+    """Return human-readable dataset name: prefer metadata.dataset_name, fallback to stem."""
+    return (entry.get("metadata") or {}).get("dataset_name") or path.stem
+
+
 def load_all_entries(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
     """Load all JSONL files, return list of dicts with 'source_file' added."""
     entries: list[dict[str, Any]] = []
@@ -82,10 +113,33 @@ def load_all_entries(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
                 try:
                     entry = json.loads(line)
                     entry["source_file"] = source
+                    entry.setdefault("_dataset_name", _extract_dataset_name(path, entry))
                     entries.append(entry)
                 except json.JSONDecodeError:
                     pass
     return entries
+
+
+def get_all_versions(entry_id: str, data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
+    """Return all labeled versions of an entry (same id, across all source files)."""
+    versions: list[dict[str, Any]] = []
+    for path in sorted(data_dir.glob("*.jsonl")):
+        source = _source_name(path)
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("id") == entry_id:
+                        entry["source_file"] = source
+                        entry["_dataset_name"] = _extract_dataset_name(path, entry)
+                        versions.append(entry)
+                        break
+                except json.JSONDecodeError:
+                    pass
+    return versions
 
 
 def get_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
@@ -101,6 +155,7 @@ def get_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None
                     entry = json.loads(line)
                     if entry.get("id") == entry_id:
                         entry["source_file"] = source
+                        entry["_dataset_name"] = _extract_dataset_name(path, entry)
                         return entry
                 except json.JSONDecodeError:
                     pass
@@ -110,6 +165,7 @@ def get_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None
 def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
     models: set[str] = set()
     datasets: set[str] = set()
+    dataset_names: dict[str, str] = {}  # source_file → dataset_name
     trajectories: set[str] = set()
     alignments: set[str] = set()
     judges: set[str] = set()
@@ -118,7 +174,11 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
         if e.get("model"):
             models.add(e["model"])
         if e.get("source_file"):
-            datasets.add(e["source_file"])
+            sf = e["source_file"]
+            datasets.add(sf)
+            dn = (e.get("_dataset_name") or
+                  (e.get("metadata") or {}).get("dataset_name") or sf)
+            dataset_names[sf] = dn
         assessment = (e.get("metadata") or {}).get("assessment") or {}
         if assessment.get("trajectory"):
             trajectories.add(assessment["trajectory"])
@@ -127,12 +187,28 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
         if e.get("judge"):
             judges.add(e["judge"])
 
+    # Collect all behaviour group IDs that actually appear in any entry
+    behaviour_group_ids: list[str] = list(dict.fromkeys(
+        gid
+        for gid in LABEL_GROUPS
+        if any(
+            gid in (
+                label_group(lbl)
+                for ann in (e.get("annotations") or [])
+                for lbl in (ann.get("labels") or [])
+            )
+            for e in entries
+        )
+    ))
+
     return {
         "models": sorted(models),
         "datasets": sorted(datasets),
+        "dataset_names": dataset_names,
         "trajectories": sorted(trajectories),
         "alignments": sorted(alignments),
         "judges": sorted(judges),
+        "behaviours": behaviour_group_ids,
     }
 
 
@@ -153,12 +229,22 @@ def entry_summary(entry: dict[str, Any]) -> dict[str, Any]:
             user_prompt = msg.get("content", "")[:200]
             break
 
+    # Collect individual labels and behaviour groups present in this entry
+    label_ids: list[str] = list(dict.fromkeys(
+        lbl
+        for ann in annotations
+        for lbl in (ann.get("labels") or [])
+    ))
+    behaviour_groups: list[str] = list(dict.fromkeys(label_group(l) for l in label_ids))
+
+    dataset_name = entry.get("_dataset_name") or metadata.get("dataset_name") or entry.get("source_file", "")
+
     return {
         "id": entry.get("id", ""),
         "model": entry.get("model", ""),
         "judge": entry.get("judge", ""),
         "source_file": entry.get("source_file", ""),
-        "dataset_name": metadata.get("dataset_name", entry.get("source_file", "")),
+        "dataset_name": dataset_name,
         "trajectory": assessment.get("trajectory", ""),
         "alignment": assessment.get("alignment", ""),
         "turning_point": assessment.get("turning_point", -1),
@@ -167,6 +253,8 @@ def entry_summary(entry: dict[str, Any]) -> dict[str, Any]:
         "has_reasoning": metadata.get("has_reasoning", bool(annotations)),
         "user_prompt": user_prompt,
         "labeled_at": metadata.get("labeled_at", ""),
+        "behaviours": behaviour_groups,
+        "label_ids": label_ids,
     }
 
 
@@ -182,6 +270,7 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     trajectory_counts: dict[str, int] = {}
     alignment_counts: dict[str, int] = {}
     score_buckets: list[int] = [0, 0, 0]  # -1, 0, +1
+    model_dataset_counts: dict[str, dict[str, int]] = {}  # model → dataset_name → count
 
     total_annotations = 0
     entries_with_annotations = 0
@@ -217,9 +306,19 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         judge = entry.get("judge", "")
         if judge:
             judge_counts[judge] = judge_counts.get(judge, 0) + 1
-        ds = entry.get("source_file", "")
+        ds = (entry.get("_dataset_name") or
+              (entry.get("metadata") or {}).get("dataset_name") or
+              entry.get("source_file", ""))
         if ds:
             dataset_counts[ds] = dataset_counts.get(ds, 0) + 1
+
+        model_key = model or "unknown"
+        ds_key = ds or "unknown"
+        if model_key not in model_dataset_counts:
+            model_dataset_counts[model_key] = {}
+        model_dataset_counts[model_key][ds_key] = (
+            model_dataset_counts[model_key].get(ds_key, 0) + 1
+        )
         traj = assessment.get("trajectory", "")
         if traj:
             trajectory_counts[traj] = trajectory_counts.get(traj, 0) + 1
@@ -233,6 +332,10 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         group_label_counts[gid] = {lbl: label_counts.get(lbl, 0) for lbl in gdata["labels"]}
 
     score_labels = ["-1", "0", "1"]
+
+    # Collect sorted unique models and datasets for heatmap axes
+    all_heatmap_models = sorted(model_dataset_counts.keys())
+    all_heatmap_datasets = sorted({ds for m in model_dataset_counts.values() for ds in m})
 
     return {
         "total_entries": len(entries),
@@ -248,6 +351,9 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "alignment_counts": dict(sorted(alignment_counts.items(), key=lambda x: -x[1])),
         "score_buckets": score_buckets,
         "score_labels": score_labels,
+        "model_dataset_counts": model_dataset_counts,
+        "heatmap_models": all_heatmap_models,
+        "heatmap_datasets": all_heatmap_datasets,
     }
 
 
