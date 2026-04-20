@@ -10,6 +10,7 @@
   </button>
 </div>
 
+
 <!-- ── Info bar ─────────────────────────────────────────────── -->
 <div class="collapsible-header" id="collapsible-header">
 <div class="info-bar">
@@ -118,6 +119,17 @@
 
 <!-- ── Compare panel ─────────────────────────────────────────── -->
 <div class="compare-panel" id="compare-panel">
+  <div style="display: flex; align-items: center; gap: 0.5rem; margin-right: 1.5rem; padding-right: 1.5rem; border-right: 1px solid var(--bg-3);">
+    <span class="compare-label">Main View:</span>
+    <select onchange="window.location.href='?source=' + this.value" style="padding: 0.2rem 0.5rem; border-radius: 5px; border: 1px solid var(--bg-3); background: var(--bg-2); color: var(--fg); font-size: 0.82rem; outline: none; cursor: pointer; max-width: 250px;">
+      {% for v in versions %}
+        <option value="{{ v.source_file }}" {% if v.source_file == entry.source_file %}selected{% endif %}>
+          {{ v.judge or v.source_file }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  
   <span class="compare-label">Compare with:</span>
   <div class="compare-chips" id="compare-chips">
     <span class="compare-loading" id="compare-loading">Loading…</span>
@@ -171,6 +183,7 @@ const ALL_LABEL_META = {{ all_labels | tojson }};
 const USED_GROUPS  = {{ used_groups | tojson }};
 const USED_LABELS  = {{ used_labels | tojson }};
 const ENTRY_ID     = {{ entry.id | tojson }};
+const REASONING_HASH = {{ reasoning_hash | tojson }};
 const ENTRY_SOURCE = {{ entry.source_file | tojson }};
 
 // Build label → group lookup from GROUP_META
@@ -407,7 +420,7 @@ let openSources = new Set(); // source_files currently open in compare grid
 async function loadCompareVersions() {
   const loading = document.getElementById('compare-loading');
   try {
-    const res = await fetch(`/api/entry/${ENTRY_ID}/compare`);
+    const res = await fetch(`/api/entry/${ENTRY_ID}/${REASONING_HASH}/compare`);
     compareVersions = await res.json();
     renderCompareChips();
   } catch (e) {

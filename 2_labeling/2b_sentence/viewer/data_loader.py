@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,11 @@ _DEFAULT_DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled" / get_taxo
 DATA_DIR: Path = Path(os.environ["VIEWER_DATA_DIR"]) if "VIEWER_DATA_DIR" in os.environ else _DEFAULT_DATA_DIR
 
 # ── Label group metadata (loaded from taxonomy.json) ─────────────────────────
+
+def _get_reasoning_hash(entry: dict[str, Any]) -> str:
+    messages = entry.get("messages") or []
+    reasoning_msg = next((m["content"] for m in messages if m["role"] == "reasoning"), "")
+    return hashlib.md5(reasoning_msg.encode("utf-8")).hexdigest()[:8]
 
 
 def _build_label_groups() -> dict[str, dict[str, Any]]:
@@ -120,8 +126,8 @@ def load_all_entries(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
     return entries
 
 
-def get_all_versions(entry_id: str, data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
-    """Return all labeled versions of an entry (same id, across all source files)."""
+def get_all_versions(entry_id: str, reasoning_hash: str, data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
+    """Return all labeled versions of an entry (same id and same reasoning text)."""
     versions: list[dict[str, Any]] = []
     for path in sorted(data_dir.glob("*.jsonl")):
         source = _source_name(path)
@@ -132,18 +138,17 @@ def get_all_versions(entry_id: str, data_dir: Path = DATA_DIR) -> list[dict[str,
                     continue
                 try:
                     entry = json.loads(line)
-                    if entry.get("id") == entry_id:
+                    if entry.get("id") == entry_id and _get_reasoning_hash(entry) == reasoning_hash:
                         entry["source_file"] = source
                         entry["_dataset_name"] = _extract_dataset_name(path, entry)
                         versions.append(entry)
-                        break
                 except json.JSONDecodeError:
                     pass
     return versions
 
 
-def get_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
-    """Find a single entry by id (scans all files)."""
+def get_entry(entry_id: str, reasoning_hash: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
+    """Find a single entry by id and reasoning hash (scans all files)."""
     for path in sorted(data_dir.glob("*.jsonl")):
         source = _source_name(path)
         with open(path, encoding="utf-8") as f:
@@ -153,7 +158,7 @@ def get_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None
                     continue
                 try:
                     entry = json.loads(line)
-                    if entry.get("id") == entry_id:
+                    if entry.get("id") == entry_id and _get_reasoning_hash(entry) == reasoning_hash:
                         entry["source_file"] = source
                         entry["_dataset_name"] = _extract_dataset_name(path, entry)
                         return entry
@@ -212,50 +217,75 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
     }
 
 
-def entry_summary(entry: dict[str, Any]) -> dict[str, Any]:
-    """Produce a lightweight summary dict for the index page."""
-    annotations = entry.get("annotations") or []
-    metadata = entry.get("metadata") or {}
-    assessment = metadata.get("assessment") or {}
-
-    # Average safety score
-    scores = [a.get("score", 0) for a in annotations if a.get("score") is not None]
-    avg_score = round(sum(scores) / len(scores), 2) if scores else 0.0
-
-    # User prompt preview
-    user_prompt = ""
-    for msg in (entry.get("messages") or []):
-        if msg.get("role") == "user":
-            user_prompt = msg.get("content", "")[:200]
-            break
-
-    # Collect individual labels and behaviour groups present in this entry
-    label_ids: list[str] = list(dict.fromkeys(
-        lbl
-        for ann in annotations
-        for lbl in (ann.get("labels") or [])
-    ))
-    behaviour_groups: list[str] = list(dict.fromkeys(label_group(l) for l in label_ids))
-
-    dataset_name = entry.get("_dataset_name") or metadata.get("dataset_name") or entry.get("source_file", "")
-
-    return {
-        "id": entry.get("id", ""),
-        "model": entry.get("model", ""),
-        "judge": entry.get("judge", ""),
-        "source_file": entry.get("source_file", ""),
-        "dataset_name": dataset_name,
-        "trajectory": assessment.get("trajectory", ""),
-        "alignment": assessment.get("alignment", ""),
-        "turning_point": assessment.get("turning_point", -1),
-        "avg_score": avg_score,
-        "n_annotations": len(annotations),
-        "has_reasoning": metadata.get("has_reasoning", bool(annotations)),
-        "user_prompt": user_prompt,
-        "labeled_at": metadata.get("labeled_at", ""),
-        "behaviours": behaviour_groups,
-        "label_ids": label_ids,
-    }
+def get_grouped_summaries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Produce lightweight summary dicts for the index page, grouped by id + response text."""
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    
+    for entry in entries:
+        h = _get_reasoning_hash(entry)
+        eid = entry.get("id", "")
+        key = (eid, h)
+        
+        annotations = entry.get("annotations") or []
+        metadata = entry.get("metadata") or {}
+        assessment = metadata.get("assessment") or {}
+        
+        scores = [a.get("score", 0) for a in annotations if a.get("score") is not None]
+        
+        user_prompt = ""
+        for msg in (entry.get("messages") or []):
+            if msg.get("role") == "user":
+                user_prompt = msg.get("content", "")[:200]
+                break
+                
+        label_ids = list(dict.fromkeys(lbl for ann in annotations for lbl in (ann.get("labels") or [])))
+        behaviour_groups = list(dict.fromkeys(label_group(l) for l in label_ids))
+        dataset_name = entry.get("_dataset_name") or metadata.get("dataset_name") or entry.get("source_file", "")
+        
+        if key not in groups:
+            groups[key] = {
+                "id": eid,
+                "reasoning_hash": h,
+                "model": entry.get("model", ""),
+                "judges": [],
+                "source_files": [],
+                "dataset_names": [],
+                "trajectory": assessment.get("trajectory", ""),
+                "alignment": assessment.get("alignment", ""),
+                "scores": [],
+                "n_annotations": 0,
+                "has_reasoning": metadata.get("has_reasoning", bool(annotations)),
+                "user_prompt": user_prompt,
+                "labeled_at": metadata.get("labeled_at", ""),
+                "behaviours": [],
+                "label_ids": [],
+            }
+            
+        g = groups[key]
+        judge = entry.get("judge", "")
+        if judge and judge not in g["judges"]:
+            g["judges"].append(judge)
+        sf = entry.get("source_file", "")
+        if sf and sf not in g["source_files"]:
+            g["source_files"].append(sf)
+        if dataset_name and dataset_name not in g["dataset_names"]:
+            g["dataset_names"].append(dataset_name)
+            
+        g["scores"].extend(scores)
+        g["n_annotations"] += len(annotations)
+        for b in behaviour_groups:
+            if b not in g["behaviours"]:
+                g["behaviours"].append(b)
+        for l in label_ids:
+            if l not in g["label_ids"]:
+                g["label_ids"].append(l)
+                
+    # Finalize scores
+    for g in groups.values():
+        scores = g.pop("scores")
+        g["avg_score"] = round(sum(scores) / len(scores), 2) if scores else 0.0
+        
+    return list(groups.values())
 
 
 # ── Statistics ────────────────────────────────────────────────────────────────

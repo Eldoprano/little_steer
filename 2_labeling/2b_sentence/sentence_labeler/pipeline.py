@@ -339,6 +339,7 @@ def apply_labeling_output(
     mapper_cfg: MapperConfig,
     warn_fn: callable | None = None,
     taxonomy_version: str = "",
+    reasoning_truncated: bool = False,
 ) -> ConversationEntry:
     """Return a new ConversationEntry with annotations and assessment filled in."""
     reasoning_text = entry.messages[reasoning_msg_idx]["content"]
@@ -361,6 +362,8 @@ def apply_labeling_output(
     new_metadata["labeled_at"] = datetime.now(timezone.utc).isoformat()
     if taxonomy_version:
         new_metadata["taxonomy_version"] = taxonomy_version
+    if reasoning_truncated:
+        new_metadata["reasoning_truncated"] = True
 
     return ConversationEntry(
         id=entry.id,
@@ -571,6 +574,7 @@ def process_file(
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
             taxonomy_version=taxonomy_version,
+            reasoning_truncated=reasoning_truncated,
         )
 
         # Write to output (serialized)
@@ -799,6 +803,7 @@ def process_breadth_first(
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
             taxonomy_version=taxonomy_version,
+            reasoning_truncated=reasoning_truncated,
         )
 
         with write_locks[fname]:

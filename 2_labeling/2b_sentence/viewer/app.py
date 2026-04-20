@@ -15,14 +15,14 @@ from pathlib import Path
 # Allow running as `python viewer/app.py` from the project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, abort, jsonify, render_template
+from flask import Flask, abort, jsonify, render_template, request
 
 from viewer.data_loader import (
     ALL_LABELS,
     DATA_DIR,
     LABEL_GROUPS,
     compute_stats,
-    entry_summary,
+    get_grouped_summaries,
     get_all_versions,
     get_entry,
     get_filter_options,
@@ -40,7 +40,7 @@ def _load() -> list[dict]:
 @app.route("/")
 def index():
     entries = _load()
-    summaries = [entry_summary(e) for e in entries]
+    summaries = get_grouped_summaries(entries)
     filters = get_filter_options(entries)
     return render_template(
         "index.html",
@@ -54,11 +54,17 @@ def index():
     )
 
 
-@app.route("/entry/<entry_id>")
-def entry_detail(entry_id: str):
-    entry = get_entry(entry_id, DATA_DIR)
-    if entry is None:
+@app.route("/entry/<entry_id>/<reasoning_hash>")
+def entry_detail(entry_id: str, reasoning_hash: str):
+    versions = get_all_versions(entry_id, reasoning_hash, DATA_DIR)
+    if not versions:
         abort(404)
+
+    requested_source = request.args.get("source")
+    if requested_source:
+        entry = next((v for v in versions if v["source_file"] == requested_source), versions[0])
+    else:
+        entry = versions[0]
 
     # Find messages by role
     messages = entry.get("messages") or []
@@ -108,6 +114,7 @@ def entry_detail(entry_id: str):
     return render_template(
         "entry.html",
         entry=entry,
+        versions=versions,
         user_msg=user_msg,
         reasoning_html=reasoning_html,
         assistant_msg=assistant_msg,
@@ -121,6 +128,7 @@ def entry_detail(entry_id: str):
         avg_score=avg_score,
         label_groups=LABEL_GROUPS,
         all_labels=ALL_LABELS,
+        reasoning_hash=reasoning_hash,
     )
 
 
@@ -138,13 +146,13 @@ def stats():
 @app.route("/api/entries")
 def api_entries():
     entries = _load()
-    return jsonify([entry_summary(e) for e in entries])
+    return jsonify(get_grouped_summaries(entries))
 
 
-@app.route("/api/entry/<entry_id>/compare")
-def api_entry_compare(entry_id: str):
+@app.route("/api/entry/<entry_id>/<reasoning_hash>/compare")
+def api_entry_compare(entry_id: str, reasoning_hash: str):
     """Return all labeled versions of an entry (same id, all source files)."""
-    versions = get_all_versions(entry_id, DATA_DIR)
+    versions = get_all_versions(entry_id, reasoning_hash, DATA_DIR)
     result = []
     for entry in versions:
         messages = entry.get("messages") or []

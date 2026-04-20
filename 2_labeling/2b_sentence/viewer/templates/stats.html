@@ -36,8 +36,8 @@
 <h2 class="section-title">Behaviour counts by group</h2>
 <div class="charts-grid-6">
   {% for gid, gdata in label_groups.items() %}
-  <div class="chart-box" style="border-color:{{ gdata.border }}">
-    <div class="chart-box-header" style="background:{{ gdata.color }};color:{{ gdata.text }};border-color:{{ gdata.border }}">
+  <div class="chart-box group-box-{{ gid }}">
+    <div class="chart-box-header">
       {{ gdata.name }}
     </div>
     <canvas id="chart-group-{{ gid }}" height="180"></canvas>
@@ -45,41 +45,41 @@
   {% endfor %}
 </div>
 
-<!-- Trajectory distribution -->
-<h2 class="section-title">Trajectory distribution</h2>
-<div class="charts-row-wide">
-  <div class="chart-box-wide">
-    <canvas id="chart-trajectory" height="200"></canvas>
+<!-- Distribution charts: Trajectory & Score -->
+<div class="charts-row">
+  <div class="chart-col">
+    <h2 class="section-title">Trajectory distribution</h2>
+    <div class="chart-box-wide">
+      <canvas id="chart-trajectory" height="250"></canvas>
+    </div>
+  </div>
+  <div class="chart-col">
+    <h2 class="section-title">Safety score distribution</h2>
+    <div class="chart-box-wide">
+      <canvas id="chart-scores" height="250"></canvas>
+    </div>
   </div>
 </div>
 
-<!-- Score distribution -->
-<h2 class="section-title">Safety score distribution</h2>
-<div class="charts-row-wide">
-  <div class="chart-box-wide">
-    <canvas id="chart-scores" height="200"></canvas>
+<!-- Breakdowns -->
+<div class="charts-grid-3">
+  <div class="chart-col">
+    <h2 class="section-title">Entries by model</h2>
+    <div class="chart-box-wide">
+      <canvas id="chart-model" height="250"></canvas>
+    </div>
   </div>
-</div>
-
-<!-- Model / Judge / Dataset breakdowns -->
-<h2 class="section-title">Entries by model</h2>
-<div class="charts-row-wide">
-  <div class="chart-box-wide">
-    <canvas id="chart-model" height="200"></canvas>
+  <div class="chart-col">
+    <h2 class="section-title">Entries by judge</h2>
+    <div class="chart-box-wide">
+      <canvas id="chart-judge" height="250"></canvas>
+    </div>
   </div>
-</div>
-
-<h2 class="section-title">Entries by judge (labeler)</h2>
-<div class="charts-row-wide">
-  <div class="chart-box-wide">
-    <canvas id="chart-judge" height="200"></canvas>
-  </div>
-</div>
-
-<h2 class="section-title">Entries by dataset</h2>
-<div class="charts-row-wide">
-  <div class="chart-box-wide">
-    <canvas id="chart-dataset" height="200"></canvas>
+  <div class="chart-col">
+    <h2 class="section-title">Entries by dataset</h2>
+    <div class="chart-box-wide">
+      <canvas id="chart-dataset" height="250"></canvas>
+    </div>
   </div>
 </div>
 
@@ -91,12 +91,15 @@
 const isDark = () => document.documentElement.dataset.theme === "dark";
 
 function chartColors() {
+  const dark = isDark();
   return {
-    grid:  isDark() ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)",
-    tick:  isDark() ? "#d3c6aa" : "#5c6a72",
-    label: isDark() ? "#d3c6aa" : "#5c6a72",
+    grid:  dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)",
+    tick:  dark ? "#d3c6aa" : "#5c6a72",
+    label: dark ? "#d3c6aa" : "#5c6a72",
   };
 }
+
+const charts = {};
 
 function baseBarOpts(horizontal) {
   const cc = chartColors();
@@ -104,6 +107,7 @@ function baseBarOpts(horizontal) {
   const catAxis = horizontal ? "y" : "x";
   return {
     responsive: true,
+    maintainAspectRatio: false,
     indexAxis: horizontal ? "y" : "x",
     plugins: { legend: { display: false } },
     scales: {
@@ -112,6 +116,45 @@ function baseBarOpts(horizontal) {
     },
   };
 }
+
+const TRAJ_COLORS_PALETTE = [
+  "#dbbc7f", "#e69875", "#e67e80", "#a7c080", "#83c092", "#d699b6", "#7fbbb3", "#d3c6aa"
+];
+
+function getGroupColor(index) {
+  return TRAJ_COLORS_PALETTE[index % TRAJ_COLORS_PALETTE.length];
+}
+
+function updateAllCharts() {
+  const cc = chartColors();
+  Object.values(charts).forEach(chart => {
+    if (chart.options.scales.x) {
+      chart.options.scales.x.grid.color = cc.grid;
+      chart.options.scales.x.ticks.color = cc.tick;
+      if (chart.options.scales.x.title) chart.options.scales.x.title.color = cc.label;
+    }
+    if (chart.options.scales.y) {
+      chart.options.scales.y.grid.color = cc.grid;
+      chart.options.scales.y.ticks.color = cc.tick;
+      if (chart.options.scales.y.title) chart.options.scales.y.title.color = cc.label;
+    }
+    
+    // Update group specific colors
+    if (chart.canvas.id.startsWith('chart-group-')) {
+      const gid = chart.canvas.id.replace('chart-group-', '');
+      const index = Array.from(document.querySelectorAll('[id^="chart-group-"]')).findIndex(el => el.id === chart.canvas.id);
+      const color = getGroupColor(index);
+      const isD = isDark();
+      chart.data.datasets[0].backgroundColor = isD ? color + "cc" : color;
+      chart.data.datasets[0].borderColor = color;
+    }
+    
+    chart.update();
+  });
+  if (window.renderHeatmap) window.renderHeatmap();
+}
+
+document.addEventListener('themechange', updateAllCharts);
 
 // ── Per-group label charts ──────────────────────────────────────────────────
 const GROUP_LABEL_COUNTS = {{ stats.group_label_counts | tojson }};
@@ -124,11 +167,17 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const labels = gdata.labels;
   const counts = labels.map(l => (GROUP_LABEL_COUNTS[gid] || {})[l] || 0);
   const ctx = document.getElementById("chart-group-" + gid);
-  new Chart(ctx, {
+  
+  const index = {{ loop.index0 }};
+  const color = getGroupColor(index);
+  const isD = isDark();
+  const bg = isD ? color + "cc" : color;
+  
+  charts["group-" + gid] = new Chart(ctx, {
     type: "bar",
     data: {
       labels,
-      datasets: [{ data: counts, backgroundColor: gdata.color, borderColor: gdata.border, borderWidth: 1 }],
+      datasets: [{ data: counts, backgroundColor: bg, borderColor: color, borderWidth: 1 }],
     },
     options: baseBarOpts(false),
   });
@@ -139,17 +188,17 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
 (function() {
   const trajCounts = {{ stats.trajectory_counts | tojson }};
   const TRAJ_COLORS = {
-    concern_then_refuse:      "#dbbc7f",
-    concern_then_comply:      "#e69875",
-    comply_no_deliberation:   "#e67e80",
-    refuse_no_deliberation:   "#a7c080",
-    deliberation_then_refuse: "#83c092",
-    deliberation_then_comply: "#d699b6",
+    concern_then_refuse:      TRAJ_COLORS_PALETTE[0],
+    concern_then_comply:      TRAJ_COLORS_PALETTE[1],
+    comply_no_deliberation:   TRAJ_COLORS_PALETTE[2],
+    refuse_no_deliberation:   TRAJ_COLORS_PALETTE[3],
+    deliberation_then_refuse: TRAJ_COLORS_PALETTE[4],
+    deliberation_then_comply: TRAJ_COLORS_PALETTE[5],
   };
   const labels = Object.keys(trajCounts);
   const counts = labels.map(l => trajCounts[l]);
   const colors = labels.map(l => TRAJ_COLORS[l] || "#888");
-  new Chart(document.getElementById("chart-trajectory"), {
+  charts["trajectory"] = new Chart(document.getElementById("chart-trajectory"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
     options: baseBarOpts(true),
@@ -166,16 +215,14 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
     if (t < 0.6) return "#dbbc7f";
     return "#a7c080";
   });
-  new Chart(document.getElementById("chart-scores"), {
+  charts["scores"] = new Chart(document.getElementById("chart-scores"), {
     type: "bar",
     data: { labels, datasets: [{ data: buckets, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
     options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
+      ...baseBarOpts(false),
       scales: {
-        x: { title: { display: true, text: "Safety score bucket", color: chartColors().label },
-             grid: { color: chartColors().grid }, ticks: { color: chartColors().tick } },
-        y: { grid: { color: chartColors().grid }, ticks: { color: chartColors().tick } },
+        x: { ...baseBarOpts(false).scales.x, title: { display: true, text: "Safety score bucket", color: chartColors().label } },
+        y: baseBarOpts(false).scales.y,
       },
     },
   });
@@ -187,7 +234,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
   const full   = Object.keys(d);
   const counts = Object.values(d);
-  new Chart(document.getElementById("chart-model"), {
+  charts["model"] = new Chart(document.getElementById("chart-model"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#89b4fa", borderColor: "#89b4fa", borderWidth: 1 }] },
     options: { ...baseBarOpts(true), plugins: { legend: { display: false },
@@ -201,7 +248,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
   const full   = Object.keys(d);
   const counts = Object.values(d);
-  new Chart(document.getElementById("chart-judge"), {
+  charts["judge"] = new Chart(document.getElementById("chart-judge"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#cba6f7", borderColor: "#cba6f7", borderWidth: 1 }] },
     options: { ...baseBarOpts(true), plugins: { legend: { display: false },
@@ -214,7 +261,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const d = {{ stats.dataset_counts | tojson }};
   const labels = Object.keys(d);
   const counts = Object.values(d);
-  new Chart(document.getElementById("chart-dataset"), {
+  charts["dataset"] = new Chart(document.getElementById("chart-dataset"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#a7c080", borderColor: "#a7c080", borderWidth: 1 }] },
     options: { ...baseBarOpts(true), plugins: { legend: { display: false } } },
@@ -240,38 +287,65 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   }
 
   const wrap = document.getElementById("heatmap-wrap");
-  const colW = Math.max(60, Math.floor((wrap.clientWidth - 180) / hDatasets.length));
+  
+  window.renderHeatmap = function() {
+    const baseColor = isDark() ? "131,192,146" : "53, 167, 124"; // aqua
+    let html = '<table class="heatmap-table"><thead><tr><th></th>';
+    hDatasets.forEach(d => { html += `<th title="${d}">${d}</th>`; });
+    html += '</tr></thead><tbody>';
 
-  let html = '<table class="heatmap-table"><thead><tr><th></th>';
-  hDatasets.forEach(d => { html += `<th title="${d}">${d}</th>`; });
-  html += '</tr></thead><tbody>';
-
-  hModels.forEach(m => {
-    html += `<tr><td class="heatmap-row-label" title="${m}">${shortModel(m)}</td>`;
-    hDatasets.forEach(d => {
-      const v = (mdCounts[m] || {})[d] || 0;
-      const alpha = v > 0 ? 0.12 + (v / maxVal) * 0.75 : 0;
-      const bg = v > 0 ? `rgba(131,192,146,${alpha.toFixed(2)})` : 'transparent';
-      html += `<td class="heatmap-cell" style="background:${bg}" title="${m} × ${d}: ${v}">${v > 0 ? v : ''}</td>`;
+    hModels.forEach(m => {
+      html += `<tr><td class="heatmap-row-label" title="${m}">${shortModel(m)}</td>`;
+      hDatasets.forEach(d => {
+        const v = (mdCounts[m] || {})[d] || 0;
+        const alpha = v > 0 ? 0.12 + (v / maxVal) * 0.75 : 0;
+        const bg = v > 0 ? `rgba(${baseColor},${alpha.toFixed(2)})` : 'transparent';
+        html += `<td class="heatmap-cell" style="background:${bg}" title="${m} × ${d}: ${v}">${v > 0 ? v : ''}</td>`;
+      });
+      html += '</tr>';
     });
-    html += '</tr>';
-  });
 
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+  
+  renderHeatmap();
 })();
 </script>
 
 <style>
 .stats-summary { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem; }
 .stat-card { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
-             padding:1.2rem 1.8rem; min-width:160px; text-align:center; }
+             padding:1.2rem 1.8rem; min-width:160px; text-align:center; flex: 1; }
 .stat-value { font-size:2rem; font-weight:600; color:var(--fg); }
 .stat-label { font-size:0.85rem; color:var(--fg-dim); margin-top:4px; }
 
-.section-title { font-size:1.1rem; font-weight:600; margin:2rem 0 0.8rem; color:var(--fg); }
+.section-title { font-size:1.1rem; font-weight:600; margin:1.5rem 0 0.8rem; color:var(--fg); }
 
-/* Fixed grid so all 6 group charts are equal size */
+/* Layout improvements */
+.charts-row {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.chart-col {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 1000px) {
+  .charts-row { flex-direction: column; }
+}
+
+.charts-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+@media (max-width: 1100px) { .charts-grid-3 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px) { .charts-grid-3 { grid-template-columns: 1fr; } }
+
 .charts-grid-6 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -281,14 +355,41 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
 @media (max-width: 900px) { .charts-grid-6 { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 600px) { .charts-grid-6 { grid-template-columns: 1fr; } }
 
-.chart-box { border:1px solid var(--bg-3); border-radius:8px; overflow:hidden; background:var(--bg-2); }
-.chart-box-header { padding:6px 12px; font-size:0.85rem; font-weight:600;
-                    border-bottom:1px solid; }
-.chart-box canvas { padding:12px; }
+.chart-box { 
+  border:1px solid var(--box-border); 
+  border-radius:8px; 
+  overflow:hidden; 
+  background:var(--bg-2); 
+  height: 240px; 
+  display: flex; 
+  flex-direction: column;
+}
+.chart-box-header { 
+  padding:6px 12px; font-size:0.85rem; font-weight:600;
+  border-bottom:1px solid var(--box-border); 
+  background: var(--box-bg);
+  color: var(--box-fg);
+  flex-shrink: 0;
+}
+.chart-box canvas { padding:12px; flex: 1; min-height: 0; }
 
-.charts-row-wide { margin-bottom:1.5rem; }
 .chart-box-wide { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
-                  padding:16px; }
+                  padding:16px; position: relative; }
+
+/* Dynamic group colors */
+{% for gid, gdata in label_groups.items() %}
+{% set color = ["#dbbc7f", "#e69875", "#e67e80", "#a7c080", "#83c092", "#d699b6", "#7fbbb3", "#d3c6aa"][loop.index0 % 8] %}
+.group-box-{{ gid }} {
+  --box-bg: {{ color }};
+  --box-fg: #fff;
+  --box-border: {{ color }};
+}
+[data-theme="dark"] .group-box-{{ gid }} {
+  --box-bg: {{ color }}cc;
+  --box-fg: #fff;
+  --box-border: {{ color }};
+}
+{% endfor %}
 
 /* Heatmap */
 .heatmap-wrap { overflow-x:auto; margin-bottom:2rem; }
