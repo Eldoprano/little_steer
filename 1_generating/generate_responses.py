@@ -601,9 +601,10 @@ def generate_batch_openai(
     model_cfg: ResolvedModelConfig,
     max_retries: int = 1,
     max_workers: int = 8,
+    on_complete: Any = None,
 ) -> list[dict]:
     """Parallel OpenAI-compatible calls. Returns results in prompt order."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def call_one(prompt: str) -> dict:
         messages = _make_messages(prompt, model_cfg)
@@ -660,8 +661,15 @@ def generate_batch_openai(
                 "finish_reason": "failed", "n_new_tokens": 0}
 
     workers = min(max_workers, max(1, len(prompts)))
+    results: list[dict | None] = [None] * len(prompts)
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        return list(ex.map(call_one, prompts))
+        future_to_idx = {ex.submit(call_one, p): i for i, p in enumerate(prompts)}
+        for fut in as_completed(future_to_idx):
+            i = future_to_idx[fut]
+            results[i] = fut.result()
+            if on_complete is not None:
+                on_complete(results[i])
+    return results  # type: ignore[return-value]
 
 
 def generate_batch(
@@ -669,9 +677,11 @@ def generate_batch(
     prompts: list[str],
     model_cfg: ResolvedModelConfig,
     max_retries: int = 1,
+    on_complete: Any = None,
 ) -> list[dict]:
     if isinstance(loaded, LoadedOpenAIModel):
-        return generate_batch_openai(loaded, prompts, model_cfg, max_retries)
+        return generate_batch_openai(loaded, prompts, model_cfg, max_retries,
+                                     on_complete=on_complete)
     return generate_batch_vllm(loaded, prompts, model_cfg, max_retries)
 
 
@@ -831,8 +841,9 @@ class ResponseGenerator:
             try:
                 self._run_for_model(model_cfg, active, run_id, machine_id)
             except Exception as e:
+                from rich.markup import escape
                 _console.print(f"\n[red][SKIP] {model_cfg.name} failed: "
-                               f"{type(e).__name__}: {e}[/red]")
+                               f"{type(e).__name__}: {escape(str(e))}[/red]")
                 failed.append(model_cfg.name)
                 gc.collect()
                 _cuda_empty()
@@ -999,6 +1010,7 @@ class ResponseGenerator:
             TimeRemainingColumn(),
             console=_console,
             transient=False,
+            speed_estimate_period=3600,
         )
 
     def _process_chunk(
@@ -1017,9 +1029,20 @@ class ResponseGenerator:
     ) -> None:
         prompts = [p for p, _ in chunk]
         t0 = time.time()
-        results = generate_batch(loaded, prompts, model_cfg, max_retries=max_retries)
-        dt = max(1e-6, time.time() - t0)
 
+        # For OpenAI backends, advance progress per-sample as each call finishes
+        # so Rich can compute ETA from the very first result.
+        openai_mode = isinstance(loaded, LoadedOpenAIModel)
+        if openai_mode:
+            def _on_complete(result: dict) -> None:
+                stats.record(result["finish_reason"])
+                progress.update(task, advance=1, stats=stats.inline())
+            results = generate_batch(loaded, prompts, model_cfg,
+                                     max_retries=max_retries, on_complete=_on_complete)
+        else:
+            results = generate_batch(loaded, prompts, model_cfg, max_retries=max_retries)
+
+        dt = max(1e-6, time.time() - t0)
         generated_at = datetime.now(timezone.utc).isoformat()
         total_tokens = 0
         for (prompt, row_meta), result in zip(chunk, results):
@@ -1036,14 +1059,18 @@ class ResponseGenerator:
                 generated_at=generated_at,
             )
             append_entry(entry, output_path)
-            stats.record(result["finish_reason"])
+            if not openai_mode:
+                stats.record(result["finish_reason"])
 
         tok_per_s = total_tokens / dt
-        progress.update(
-            task,
-            advance=len(chunk),
-            stats=f"{stats.inline()} [dim]{tok_per_s:.0f} tok/s[/dim]",
-        )
+        if openai_mode:
+            progress.update(task, stats=f"{stats.inline()} [dim]{tok_per_s:.0f} tok/s[/dim]")
+        else:
+            progress.update(
+                task,
+                advance=len(chunk),
+                stats=f"{stats.inline()} [dim]{tok_per_s:.0f} tok/s[/dim]",
+            )
 
     def _build_entry(
         self,

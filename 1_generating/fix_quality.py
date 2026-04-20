@@ -66,6 +66,26 @@ def _has_think_artifact(text: str) -> bool:
     return stripped.startswith("[/THINK]") or stripped.startswith("</think>")
 
 
+# TODO: Foreign-script generation may reflect intentional model behaviour (e.g.
+# reasoning in the training language) rather than a simple corruption artefact.
+# Before treating this as blocking, investigate whether it correlates with
+# specific models, datasets, or system prompts, and consider whether it should
+# be flagged for review rather than auto-removed.
+_FOREIGN_SCRIPT_RE = re.compile(
+    r"[\u0400-\u04FF"   # Cyrillic
+    r"\u0600-\u06FF"    # Arabic
+    r"\u0900-\u097F"    # Devanagari
+    r"\u3040-\u30FF"    # Hiragana / Katakana
+    r"\u4E00-\u9FFF"    # CJK Unified Ideographs
+    r"\uAC00-\uD7A3]"   # Korean Hangul
+)
+_FOREIGN_SCRIPT_THRESHOLD = 5
+
+
+def _has_foreign_script(text: str) -> bool:
+    return len(_FOREIGN_SCRIPT_RE.findall(text)) >= _FOREIGN_SCRIPT_THRESHOLD
+
+
 def _entry_quality_issues(entry: ConversationEntry) -> set[str]:
     issues: set[str] = set()
     reasoning_content = next(
@@ -96,11 +116,16 @@ def _entry_quality_issues(entry: ConversationEntry) -> set[str]:
     if not assistant_content:
         issues.add("empty_response")
 
+    for content in (reasoning_content, assistant_content):
+        if content and _has_foreign_script(content):
+            issues.add("foreign_script")
+            break
+
     return issues
 
 
 def _is_approved(entry: ConversationEntry) -> bool:
-    blocking = {"think_artifact", "max_length", "repetition", "failed", "empty_response"}
+    blocking = {"think_artifact", "max_length", "repetition", "failed", "empty_response", "foreign_script"}
     return not _entry_quality_issues(entry).intersection(blocking)
 
 
@@ -185,7 +210,7 @@ def fix_artifacts_file(path: Path, dry_run: bool) -> int:
 
 def remove_bad_file(path: Path, dry_run: bool) -> tuple[int, set[str]]:
     """Remove entries with blocking quality issues. Returns (removed_count, removed_ids)."""
-    BLOCKING = {"max_length", "repetition", "failed"}
+    BLOCKING = {"max_length", "repetition", "failed", "missing_reasoning", "foreign_script"}
     entries = _load_entries(path)
     bad_ids: set[str] = set()
     kept = []
@@ -299,12 +324,43 @@ def _reasoning_broken(entry: ConversationEntry) -> bool:
     if _detect_repetition(reasoning_content)[0]:
         return True
 
+    # Foreign-script reasoning → sentences are unlabelable in an English dataset.
+    if _has_foreign_script(reasoning_content):
+        return True
+
     # max_length where reasoning itself was cut (response is absent or tiny).
     if finish_reason == "max_length":
         if not assistant_content or len(assistant_content.strip()) < 50:
             return True
 
     return False
+
+
+def _bad_ids_for_labeled(
+    labeled_stem: str,
+    bad_ids_per_gen: dict[str, set[str]],
+) -> set[str]:
+    """Return the bad IDs that apply to a given labeled file.
+
+    Labeled files are named ``{model}_{dataset}_{labeler}``.
+    Generated files are named ``{model}_{dataset}``.
+    IDs are hashed from dataset+prompt only (no model), so the same prompt
+    produces the same ID across models.  We must only apply bad IDs from the
+    *same* generated file (model+dataset prefix) to avoid cross-model deletions.
+
+    Strategy: find the longest generated stem that is a prefix of the labeled
+    stem followed by ``_``.
+    """
+    best: str | None = None
+    for gen_stem in bad_ids_per_gen:
+        prefix = gen_stem + "_"
+        if labeled_stem.startswith(prefix) and (
+            best is None or len(gen_stem) > len(best)
+        ):
+            best = gen_stem
+    if best is None:
+        return set()
+    return bad_ids_per_gen[best]
 
 
 def sync_labeled(
@@ -320,22 +376,29 @@ def sync_labeled(
     bad or missing reasoning are purged.  Entries where the response is broken
     but the reasoning is complete are kept — their reasoning labels are valid.
 
+    IDs are scoped per generated file (model+dataset) so that a broken entry
+    in one model never deletes labeled data from a different model that happened
+    to generate the same prompt.
+
     See ``_reasoning_broken`` for exact criteria.
     """
     if not labeled_dir.exists():
         console.print(f"  [yellow]Labeled dir not found:[/yellow] {labeled_dir}")
         return
 
-    # Collect IDs where the reasoning is broken.
-    bad_ids_global: set[str] = set()
+    # Collect bad IDs per generated file stem (model+dataset), not globally.
+    bad_ids_per_gen: dict[str, set[str]] = {}
     for gen_path in sorted(generated_dir.glob("*.jsonl")):
         if model_filter and model_filter not in gen_path.name:
             continue
+        bad: set[str] = set()
         for entry in _load_entries(gen_path):
             if _reasoning_broken(entry):
-                bad_ids_global.add(entry.id)
+                bad.add(entry.id)
+        if bad:
+            bad_ids_per_gen[gen_path.stem] = bad
 
-    if not bad_ids_global:
+    if not bad_ids_per_gen:
         console.print("  [green]No entries with broken responses found — nothing to remove.[/green]")
         return
 
@@ -346,6 +409,9 @@ def sync_labeled(
     for labeled_path in _find_labeled_files(labeled_dir):
         if labeled_path.suffix != ".jsonl":
             continue
+        applicable_ids = _bad_ids_for_labeled(labeled_path.stem, bad_ids_per_gen)
+        if not applicable_ids:
+            continue
         file_total = 0
         file_remove = 0
         for line in open(labeled_path):
@@ -355,7 +421,7 @@ def sync_labeled(
             try:
                 data = json.loads(line)
                 file_total += 1
-                if data.get("id") in bad_ids_global:
+                if data.get("id") in applicable_ids:
                     file_remove += 1
             except json.JSONDecodeError:
                 pass
@@ -407,7 +473,10 @@ def sync_labeled(
     for labeled_path in _find_labeled_files(labeled_dir):
         if labeled_path.suffix != ".jsonl":
             continue
-        removed = _remove_ids_from_labeled(labeled_path, bad_ids_global, dry_run=False)
+        applicable_ids = _bad_ids_for_labeled(labeled_path.stem, bad_ids_per_gen)
+        if not applicable_ids:
+            continue
+        removed = _remove_ids_from_labeled(labeled_path, applicable_ids, dry_run=False)
         if removed:
             try:
                 rel = str(labeled_path.relative_to(labeled_dir))
@@ -416,7 +485,7 @@ def sync_labeled(
             console.print(f"    [red]{rel}[/red]: removed {removed} entries")
             total_removed += removed
             cp = labeled_path.with_name(labeled_path.stem + ".checkpoint.json")
-            cp_removed = _remove_ids_from_checkpoint(cp, bad_ids_global, dry_run=False)
+            cp_removed = _remove_ids_from_checkpoint(cp, applicable_ids, dry_run=False)
             if cp_removed:
                 console.print(f"    [dim]{cp.name}[/dim]: removed {cp_removed} checkpoint entries")
 
@@ -428,7 +497,7 @@ def sync_labeled(
 # ─────────────────────────────────────────────────────────────────────────────
 
 ISSUE_KEYS = ["ok", "think_artifact", "max_length", "repetition",
-              "missing_reasoning", "empty_response", "failed"]
+              "missing_reasoning", "empty_response", "failed", "foreign_script"]
 
 # Short column headers to keep the table narrow enough for long filenames.
 ISSUE_HEADERS = {
@@ -439,6 +508,7 @@ ISSUE_HEADERS = {
     "missing_reasoning": "no_reason",
     "empty_response":    "empty",
     "failed":            "failed",
+    "foreign_script":    "foreign",
 }
 
 ISSUE_STYLES = {
@@ -449,6 +519,7 @@ ISSUE_STYLES = {
     "missing_reasoning": "magenta",
     "empty_response":    "magenta",
     "failed":            "bold red",
+    "foreign_script":    "yellow",
 }
 
 

@@ -186,6 +186,12 @@ Every entry gets an `approved` flag in its metadata (`true`/`false`) based on
 cheap checks performed at write time: `max_length`, `failed`, empty response,
 or a bare `[/THINK]` prefix (LMStudio artifact).
 
+`fix_quality.py` also detects a `foreign_script` issue (≥ 5 characters from
+CJK, Arabic, Cyrillic, Devanagari, or Hangul ranges). This is **flagged but
+not yet blocking** — it may reflect intentional behaviour (model reasoning in
+its training language) rather than corruption. Needs per-model investigation
+before deciding whether to auto-remove or route to manual review.
+
 `generate_responses.py` deliberately does **not** regenerate bad entries — that
 work belongs to `fix_quality.py`, which can also run an expensive n-gram
 repetition audit offline. Typical workflow after a generation run:
