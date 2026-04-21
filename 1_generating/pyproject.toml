@@ -13,6 +13,7 @@ dependencies = [
     "thesis-schema",
     "bitsandbytes>=0.48.1",
     "flask>=3.0.0",
+    "wildguard>=0.1.0",
 ]
 
 [project.optional-dependencies]
