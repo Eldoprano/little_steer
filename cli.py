@@ -205,6 +205,19 @@ STEPS: list[Step] = [
         ],
         configurable=False,
     ),
+    Step(
+        id="iaa_viewer",
+        number="2b.3",
+        title="IAA Viewer",
+        description="Inter-Annotator Agreement heatmap: compare agreement between judges over shared entries.",
+        cwd="2_labeling/2b_sentence",
+        details=[
+            "Script: iaa/app.py",
+            "Opens:   http://localhost:5051",
+            "Metric:  Cohen's κ (character-weighted, handles sentence boundary mismatches)",
+        ],
+        configurable=False,
+    ),
     # ── Phase 2c: Human labeling ──────────────────────────────────────────────
     Step(
         id="human_label",
@@ -302,6 +315,7 @@ DEFAULT_CMDS: dict[str, list[str]] = {
     "label":           cmd_label([]),
     "label_all":       ["uv", "run", "run_all.py"],
     "label_viewer":    ["uv", "run", "viewer/app.py"],
+    "iaa_viewer":      ["uv", "run", "iaa/app.py"],
     "human_label":     ["npm", "run", "dev"],
 }
 

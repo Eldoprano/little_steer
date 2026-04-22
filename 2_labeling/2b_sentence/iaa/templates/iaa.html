@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inter-Annotator Agreement</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";</script>
+  <style>
+    /* ── Layout ── */
+    .iaa-layout {
+      display: flex;
+      height: calc(100vh - 48px);
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 250px;
+      min-width: 200px;
+      background: var(--bg-1);
+      border-right: 1px solid var(--bg-3);
+      padding: 1rem 0.75rem;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+    .sidebar-section-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--fg-dim);
+      margin-bottom: 0.6rem;
+    }
+    .quick-btns {
+      display: flex;
+      gap: 0.4rem;
+      margin-bottom: 0.75rem;
+    }
+    .quick-btn {
+      font-size: 0.75rem;
+      padding: 2px 10px;
+      background: var(--bg-2);
+      border: 1px solid var(--bg-3);
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--fg);
+      font-family: inherit;
+    }
+    .quick-btn:hover { background: var(--bg-3); }
+
+    .ann-item {
+      display: flex;
+      align-items: center;
+      padding: 0.28rem 0.2rem;
+      border-bottom: 1px solid var(--bg-2);
+      gap: 0.4rem;
+    }
+    .ann-item label {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      cursor: pointer;
+      width: 100%;
+      min-width: 0;
+    }
+    .ann-item input[type=checkbox] { cursor: pointer; flex-shrink: 0; }
+    .ann-name {
+      flex: 1;
+      font-size: 0.82rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ann-count {
+      font-size: 0.75rem;
+      color: var(--fg-dim);
+      flex-shrink: 0;
+    }
+
+    /* ── Main content ── */
+    .main {
+      flex: 1;
+      padding: 1.1rem 1.5rem;
+      overflow-y: auto;
+      min-width: 0;
+    }
+
+    /* ── Controls bar ── */
+    .controls-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1.1rem;
+      flex-wrap: wrap;
+    }
+    .metric-tab, .mode-tab {
+      padding: 4px 14px;
+      border-radius: 4px;
+      border: 1px solid var(--bg-3);
+      background: var(--bg-1);
+      color: var(--fg-dim);
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-family: inherit;
+    }
+    .metric-tab.active {
+      background: var(--bg-3);
+      color: var(--fg);
+      border-color: var(--blue);
+    }
+    .mode-tab.active {
+      background: var(--bg-3);
+      color: var(--fg);
+      border-color: var(--purple);
+    }
+    .controls-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--bg-3);
+      margin: 0 0.25rem;
+    }
+    .shared-badge {
+      margin-left: auto;
+      font-size: 0.82rem;
+      color: var(--fg-dim);
+      background: var(--bg-1);
+      border: 1px solid var(--bg-2);
+      border-radius: 4px;
+      padding: 3px 10px;
+    }
+    .shared-badge strong { color: var(--aqua); }
+
+    /* ── Heatmap ── */
+    .heatmap-wrap {
+      overflow-x: auto;
+      margin-bottom: 1.2rem;
+    }
+    .heatmap-table {
+      border-collapse: separate;
+      border-spacing: 3px;
+      font-size: 0.8rem;
+    }
+    .hm-corner { width: 150px; }
+    .hm-col-header {
+      vertical-align: bottom;
+      padding-bottom: 6px;
+      padding-left: 3px;
+    }
+    .hm-col-header-inner {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      white-space: nowrap;
+      max-height: 110px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.77rem;
+      color: var(--fg-dim);
+      font-weight: 500;
+    }
+    .hm-row-label {
+      text-align: right;
+      padding: 2px 8px 2px 0;
+      white-space: nowrap;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--fg-dim);
+      font-size: 0.8rem;
+      vertical-align: middle;
+    }
+    .hm-cell {
+      width: 56px;
+      height: 40px;
+      border-radius: 4px;
+      text-align: center;
+      vertical-align: middle;
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: default;
+      position: relative;
+    }
+    .hm-cell.diagonal {
+      background: var(--bg-3) !important;
+      color: var(--fg-dim) !important;
+    }
+    .hm-cell.no-overlap {
+      background: var(--bg-2) !important;
+      color: var(--fg-dim) !important;
+    }
+
+    /* ── Legend ── */
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      font-size: 0.79rem;
+      color: var(--fg-dim);
+      margin-bottom: 1.2rem;
+    }
+    .legend-item { display: flex; align-items: center; gap: 0.35rem; }
+    .legend-swatch { width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0; }
+
+    /* ── Kappa guide ── */
+    .kappa-guide {
+      background: var(--bg-1);
+      border: 1px solid var(--bg-2);
+      border-radius: 6px;
+      padding: 0.8rem 1rem;
+      font-size: 0.8rem;
+      color: var(--fg-dim);
+      max-width: 540px;
+    }
+    .kappa-guide strong { color: var(--fg); }
+    .kappa-guide table { border-collapse: collapse; margin-top: 0.4rem; width: 100%; }
+    .kappa-guide td { padding: 2px 12px 2px 0; }
+    .kappa-guide td:first-child { color: var(--fg); font-variant-numeric: tabular-nums; min-width: 80px; }
+    .kappa-guide .note { margin-top: 0.6rem; font-size: 0.77rem; }
+
+    /* ── Loading / error ── */
+    .loading-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.8rem;
+      padding: 2.5rem 0;
+      color: var(--fg-dim);
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--bg-3);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg { color: var(--red); padding: 1rem 0; }
+
+    /* ── Floating tooltip ── */
+    #iaa-tooltip {
+      position: fixed;
+      display: none;
+      background: var(--bg-1);
+      border: 1px solid var(--bg-3);
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      white-space: nowrap;
+      z-index: 500;
+      pointer-events: none;
+      color: var(--fg);
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    }
+    #iaa-tooltip .tip-row { display: flex; gap: 0.5rem; justify-content: space-between; }
+    #iaa-tooltip .tip-key { color: var(--fg-dim); }
+    #iaa-tooltip .tip-val { font-weight: 500; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div>
+      <span class="nav-brand">IAA Viewer</span>
+      <span class="nav-sub">Inter-Annotator Agreement</span>
+    </div>
+    <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle dark/light mode">🌙</button>
+  </nav>
+
+  <div class="iaa-layout">
+
+    <!-- Sidebar: annotator selection -->
+    <aside class="sidebar">
+      <div class="sidebar-section-title">Annotators</div>
+      <div class="quick-btns">
+        <button class="quick-btn" id="btn-all">All</button>
+        <button class="quick-btn" id="btn-none">None</button>
+      </div>
+      <div id="annotator-list">
+        <div class="loading-box" style="padding:1rem 0">
+          <div class="spinner"></div>
+          <span id="sidebar-status">Loading…</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main">
+
+      <div class="controls-bar">
+        <button class="metric-tab active" data-metric="kappa">Cohen's κ</button>
+        <button class="metric-tab" data-metric="pct">% Agreement</button>
+        <button class="metric-tab" data-metric="shared">Shared entries</button>
+        <div class="controls-sep"></div>
+        <button class="mode-tab active" data-mode="score" title="Compare the -1/0/1 score field">Score</button>
+        <button class="mode-tab" data-mode="primary_label" title="Compare only the first (most important) label">Primary label</button>
+        <button class="mode-tab" data-mode="label_set" title="Compare the full label set (order-invariant)">Label set</button>
+        <span class="shared-badge" id="shared-all-badge">—</span>
+      </div>
+
+      <div id="heatmap-area">
+        <div class="loading-box">
+          <div class="spinner"></div>
+          <span id="loading-msg">Loading dataset…</span>
+        </div>
+      </div>
+
+      <div class="legend" id="legend" style="display:none">
+        <div class="legend-item">
+          <div class="legend-swatch" style="background:var(--red)"></div>Low / Negative
+        </div>
+        <div class="legend-item">
+          <div class="legend-swatch" style="background:var(--yellow)"></div>Moderate
+        </div>
+        <div class="legend-item">
+          <div class="legend-swatch" style="background:var(--green)"></div>High
+        </div>
+        <div class="legend-item">
+          <div class="legend-swatch" style="background:var(--bg-3)"></div>Self
+        </div>
+        <div class="legend-item">
+          <div class="legend-swatch" style="background:var(--bg-2)"></div>No overlap
+        </div>
+      </div>
+
+      <div class="kappa-guide" id="kappa-guide" style="display:none">
+        <strong>Cohen's κ interpretation</strong>
+        <table>
+          <tr><td>&lt; 0</td><td>Less than chance agreement</td></tr>
+          <tr><td>0.01 – 0.20</td><td>Slight agreement</td></tr>
+          <tr><td>0.21 – 0.40</td><td>Fair agreement</td></tr>
+          <tr><td>0.41 – 0.60</td><td>Moderate agreement</td></tr>
+          <tr><td>0.61 – 0.80</td><td>Substantial agreement</td></tr>
+          <tr><td>0.81 – 1.00</td><td>Almost perfect agreement</td></tr>
+        </table>
+        <p class="note" id="mode-note">
+          Computed at character level over overlapping spans — different sentence
+          boundaries between annotators are handled automatically.
+        </p>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Tooltip -->
+  <div id="iaa-tooltip"></div>
+
+  <script>
+  (() => {
+    // ── Theme toggle ─────────────────────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById("theme-toggle");
+    root.dataset.theme = localStorage.getItem("theme") || "dark";
+    themeBtn.textContent = root.dataset.theme === "dark" ? "☀️" : "🌙";
+    themeBtn.addEventListener("click", () => {
+      const next = root.dataset.theme === "dark" ? "light" : "dark";
+      root.dataset.theme = next;
+      localStorage.setItem("theme", next);
+      themeBtn.textContent = next === "dark" ? "☀️" : "🌙";
+      if (matrixData) renderHeatmap();  // recolor on theme switch
+    });
+
+    // ── App state ─────────────────────────────────────────────────────────────
+    let allAnnotators = [];   // [{name, count}]
+    let selected = new Set();
+    let currentMetric = "kappa";
+    let currentMode = "score";
+    let matrixData = null;
+    let debounceTimer = null;
+
+    // ── Color interpolation (Everforest) ──────────────────────────────────────
+    function kappaColor(kappa) {
+      const dark = root.dataset.theme === "dark";
+      const red    = dark ? [230, 126, 128] : [248,  85,  82];
+      const yellow = dark ? [219, 188, 127] : [223, 160,   0];
+      const green  = dark ? [167, 192, 128] : [141, 161,   1];
+
+      let r, g, b;
+      if (kappa >= 0) {
+        const t = Math.min(1, kappa);
+        r = Math.round(yellow[0] * (1 - t) + green[0] * t);
+        g = Math.round(yellow[1] * (1 - t) + green[1] * t);
+        b = Math.round(yellow[2] * (1 - t) + green[2] * t);
+      } else {
+        const t = Math.max(0, kappa + 1);
+        r = Math.round(red[0] * (1 - t) + yellow[0] * t);
+        g = Math.round(red[1] * (1 - t) + yellow[1] * t);
+        b = Math.round(red[2] * (1 - t) + yellow[2] * t);
+      }
+      // Choose text color for contrast
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      return {
+        bg: `rgb(${r},${g},${b})`,
+        text: lum > 0.55 ? "#2d353b" : "#d3c6aa",
+      };
+    }
+
+    // ── Sidebar rendering ─────────────────────────────────────────────────────
+    function renderSidebar() {
+      const el = document.getElementById("annotator-list");
+      if (!allAnnotators.length) {
+        el.innerHTML = '<p style="color:var(--fg-dim);font-size:0.82rem;padding-top:0.5rem">No annotators found.</p>';
+        return;
+      }
+      el.innerHTML = allAnnotators.map(a => {
+        const escaped = a.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        return `<div class="ann-item">
+          <label>
+            <input type="checkbox" ${selected.has(a.name) ? "checked" : ""}
+              data-ann="${escaped}"
+              onchange="window._iaa.toggle('${escaped}')">
+            <span class="ann-name" title="${a.name}">${a.name}</span>
+            <span class="ann-count">${a.count}</span>
+          </label>
+        </div>`;
+      }).join("");
+    }
+
+    // Expose toggle globally so inline handlers work
+    window._iaa = {
+      toggle(name) {
+        if (selected.has(name)) selected.delete(name);
+        else selected.add(name);
+        scheduleUpdate();
+      }
+    };
+
+    document.getElementById("btn-all").onclick = () => {
+      selected = new Set(allAnnotators.map(a => a.name));
+      renderSidebar();
+      scheduleUpdate();
+    };
+    document.getElementById("btn-none").onclick = () => {
+      selected.clear();
+      renderSidebar();
+      scheduleUpdate();
+    };
+
+    // ── Metric tabs ───────────────────────────────────────────────────────────
+    document.querySelectorAll(".metric-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        currentMetric = btn.dataset.metric;
+        document.querySelectorAll(".metric-tab").forEach(b =>
+          b.classList.toggle("active", b.dataset.metric === currentMetric)
+        );
+        renderHeatmap();
+      });
+    });
+
+    // ── Mode tabs (score / primary_label / label_set) ─────────────────────────
+    document.querySelectorAll(".mode-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (btn.dataset.mode === currentMode) return;
+        currentMode = btn.dataset.mode;
+        document.querySelectorAll(".mode-tab").forEach(b =>
+          b.classList.toggle("active", b.dataset.mode === currentMode)
+        );
+        matrixData = null;  // invalidate; mode change requires re-fetch
+        scheduleUpdate();
+      });
+    });
+
+    // ── Debounced update ──────────────────────────────────────────────────────
+    function scheduleUpdate() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchMatrix, 150);
+    }
+
+    // ── Tooltip ───────────────────────────────────────────────────────────────
+    const tip = document.getElementById("iaa-tooltip");
+    document.addEventListener("mousemove", e => {
+      if (tip.style.display !== "none") {
+        const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+        tip.style.left = x + "px";
+        tip.style.top = (e.clientY - 8) + "px";
+      }
+    });
+
+    function tipRow(key, val) {
+      return `<div class="tip-row"><span class="tip-key">${key}</span><span class="tip-val">${val}</span></div>`;
+    }
+
+    function attachCellTip(cell, pair) {
+      cell.addEventListener("mouseenter", e => {
+        const rows = [
+          tipRow("κ (Cohen's kappa)", pair.kappa !== null ? pair.kappa.toFixed(3) : "N/A"),
+          tipRow("% agreement", pair.pct !== null ? (pair.pct * 100).toFixed(1) + "%" : "N/A"),
+          tipRow("shared entries", pair.shared ?? 0),
+          tipRow("overlapping chars", pair.chars ?? 0),
+        ];
+        tip.innerHTML = rows.join("");
+        tip.style.display = "block";
+        const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+        tip.style.left = x + "px";
+        tip.style.top = (e.clientY - 8) + "px";
+      });
+      cell.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    }
+
+    // ── Heatmap rendering ─────────────────────────────────────────────────────
+    const MODE_NOTES = {
+      score:         "Categories: <strong>-1</strong> harmful · <strong>0</strong> neutral · <strong>1</strong> beneficial.",
+      primary_label: "Comparing <strong>labels[0]</strong> (the most important label) for each span.",
+      label_set:     "Comparing the <strong>full label set</strong> (order-invariant) for each span — two spans agree only if their complete label sets match.",
+    };
+
+    function renderHeatmap() {
+      if (!matrixData) return;
+      const { annotators, pairs, mode } = matrixData;
+
+      const noteEl = document.getElementById("mode-note");
+      if (noteEl) {
+        noteEl.innerHTML =
+          "Computed at character level over overlapping spans — different sentence boundaries are handled automatically. " +
+          (MODE_NOTES[mode] || "");
+      }
+      if (!annotators || annotators.length < 2) {
+        document.getElementById("heatmap-area").innerHTML =
+          '<p style="color:var(--fg-dim)">Select at least 2 annotators.</p>';
+        return;
+      }
+
+      document.getElementById("legend").style.display = "flex";
+      document.getElementById("kappa-guide").style.display = "block";
+
+      const table = document.createElement("table");
+      table.className = "heatmap-table";
+
+      // Header row
+      const thead = table.createTHead();
+      const hRow = thead.insertRow();
+      const cornerTh = document.createElement("th");
+      cornerTh.className = "hm-corner";
+      hRow.appendChild(cornerTh);
+      for (const b of annotators) {
+        const th = document.createElement("th");
+        th.className = "hm-col-header";
+        const inner = document.createElement("div");
+        inner.className = "hm-col-header-inner";
+        inner.title = b;
+        inner.textContent = b;
+        th.appendChild(inner);
+        hRow.appendChild(th);
+      }
+
+      // Body rows
+      const tbody = table.createTBody();
+      for (const a of annotators) {
+        const row = tbody.insertRow();
+        const labelTd = document.createElement("td");
+        labelTd.className = "hm-row-label";
+        labelTd.title = a;
+        labelTd.textContent = a;
+        row.appendChild(labelTd);
+
+        for (const b of annotators) {
+          const cell = document.createElement("td");
+          cell.className = "hm-cell";
+
+          if (a === b) {
+            cell.classList.add("diagonal");
+            cell.textContent = "1.000";
+            row.appendChild(cell);
+            continue;
+          }
+
+          const key = `${a}||${b}`;
+          const pair = pairs[key];
+
+          if (!pair || (pair.kappa === null && currentMetric === "kappa" &&
+                        pair.pct === null && currentMetric === "pct")) {
+            cell.classList.add("no-overlap");
+            cell.textContent = "N/A";
+            if (pair) attachCellTip(cell, pair);
+            row.appendChild(cell);
+            continue;
+          }
+
+          // Display value based on current metric
+          let displayVal;
+          if (currentMetric === "kappa") {
+            displayVal = pair.kappa !== null ? pair.kappa.toFixed(3) : "N/A";
+          } else if (currentMetric === "pct") {
+            displayVal = pair.pct !== null ? (pair.pct * 100).toFixed(1) + "%" : "N/A";
+          } else {
+            displayVal = pair.shared !== null ? String(pair.shared) : "0";
+          }
+
+          // Color always based on kappa for visual consistency
+          if (pair.kappa !== null) {
+            const col = kappaColor(pair.kappa);
+            cell.style.background = col.bg;
+            cell.style.color = col.text;
+          } else {
+            cell.classList.add("no-overlap");
+          }
+
+          cell.textContent = displayVal;
+          attachCellTip(cell, pair);
+          row.appendChild(cell);
+        }
+      }
+
+      const wrap = document.createElement("div");
+      wrap.className = "heatmap-wrap";
+      wrap.appendChild(table);
+
+      const area = document.getElementById("heatmap-area");
+      area.innerHTML = "";
+      area.appendChild(wrap);
+    }
+
+    // ── API: load annotators ──────────────────────────────────────────────────
+    async function fetchAnnotators() {
+      const r = await fetch("/api/annotators");
+      if (r.status === 202) return false;
+      const data = await r.json();
+      if (data.error) { showError(data.error); return true; }
+      allAnnotators = data.annotators;
+      selected = new Set(allAnnotators.map(a => a.name));
+      renderSidebar();
+      return true;
+    }
+
+    // ── API: fetch matrix + shared count ──────────────────────────────────────
+    async function fetchMatrix() {
+      const anns = Array.from(selected);
+      if (anns.length < 2) {
+        document.getElementById("heatmap-area").innerHTML =
+          '<p style="color:var(--fg-dim);padding-top:0.5rem">Select at least 2 annotators to compute agreement.</p>';
+        document.getElementById("shared-all-badge").textContent = "—";
+        document.getElementById("legend").style.display = "none";
+        document.getElementById("kappa-guide").style.display = "none";
+        return;
+      }
+
+      const matrixBody = JSON.stringify({ annotators: anns, mode: currentMode });
+      const sharedBody = JSON.stringify({ annotators: anns });
+      const headers = { "Content-Type": "application/json" };
+
+      const [mRes, sRes] = await Promise.all([
+        fetch("/api/matrix", { method: "POST", headers, body: matrixBody }),
+        fetch("/api/shared", { method: "POST", headers, body: sharedBody }),
+      ]);
+
+      if (mRes.status === 202) return;  // still loading
+
+      const mData = await mRes.json();
+      const sData = await sRes.json();
+
+      if (mData.error) { showError(mData.error); return; }
+
+      matrixData = mData;
+
+      const badge = document.getElementById("shared-all-badge");
+      if (sData.shared !== undefined) {
+        badge.innerHTML = `All selected share <strong>${sData.shared}</strong> entries`;
+      }
+
+      renderHeatmap();
+    }
+
+    // ── Error display ─────────────────────────────────────────────────────────
+    function showError(msg) {
+      document.getElementById("heatmap-area").innerHTML =
+        `<p class="error-msg">Error: ${msg}</p>`;
+    }
+
+    // ── Init: poll until dataset loaded ───────────────────────────────────────
+    async function init() {
+      while (true) {
+        try {
+          const r = await fetch("/api/status");
+          const data = await r.json();
+          if (data.error) { showError(data.error); return; }
+          if (data.ready) break;
+        } catch (_) {}
+        document.getElementById("loading-msg").textContent = "Loading dataset…";
+        await new Promise(res => setTimeout(res, 900));
+      }
+
+      document.getElementById("sidebar-status")?.remove();
+      const ok = await fetchAnnotators();
+      if (ok) await fetchMatrix();
+    }
+
+    init();
+  })();
+  </script>
+</body>
+</html>
