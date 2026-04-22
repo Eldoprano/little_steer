@@ -34,11 +34,38 @@ export interface Assessment {
   alignment: AlignmentType;
 }
 
+export interface LabelRun {
+  judge_name: string;
+  judge_model_id: string;
+  taxonomy_version: string;
+  labeled_at: string;
+  generation_hash: string;
+  reasoning_truncated: boolean;
+  assessment: Record<string, unknown>;
+  sentence_annotations: Record<string, unknown>[];
+  spans: AnnotatedSpan[];
+  usage: Record<string, unknown>;
+  finish_reason: string;
+  status: string;
+  error?: string | null;
+}
+
+export interface SafetyRun {
+  guard_name: string;
+  guard_model_id: string;
+  scored_at: string;
+  generation_hash: string;
+  result: Record<string, unknown>;
+  status: string;
+  error?: string | null;
+}
+
 export interface EntryMetadata {
   assessment?: Assessment;
   dataset_name?: string;
   has_reasoning?: boolean;
   labeled_at?: string;
+  reasoning_truncated?: boolean;
   [key: string]: unknown;
 }
 
@@ -49,6 +76,8 @@ export interface ConversationEntry {
   model: string;
   judge: string;
   metadata: EntryMetadata;
+  label_runs?: LabelRun[];
+  safety_runs?: SafetyRun[];
 }
 
 // ── Human labeling state ────────────────────────────────────────────────────
