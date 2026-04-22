@@ -6,6 +6,14 @@
 
 <div class="page-header">
   <h1>Dataset Statistics</h1>
+  <div class="stats-controls">
+    <label class="toggle-label">
+      <a href="{{ url_for('stats', exclude_safe=0 if exclude_safe else 1) }}"
+         class="toggle-btn {% if exclude_safe %}toggle-btn-active{% endif %}">
+        {% if exclude_safe %}Showing unsafe prompts only{% else %}Showing all prompts{% endif %}
+      </a>
+    </label>
+  </div>
 </div>
 
 <!-- Summary cards -->
@@ -86,6 +94,77 @@
 <!-- Model × Dataset heatmap -->
 <h2 class="section-title">Entries per model × dataset</h2>
 <div class="heatmap-wrap" id="heatmap-wrap"></div>
+
+<!-- Guard Safety Scores -->
+{% if stats.guard_stats.wildguard.n_scored > 0 or stats.guard_stats.qwen3guard.n_scored > 0 %}
+<h2 class="section-title">Guard Safety Scores</h2>
+
+<!-- Two rows of donuts, one per guard -->
+{% if stats.guard_stats.wildguard.n_scored > 0 %}
+<div class="guard-row">
+  <div class="guard-row-label">WildGuard<span class="guard-row-n">{{ stats.guard_stats.wildguard.n_scored }} scored</span></div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Prompt harmfulness</div>
+    <canvas id="chart-wg-prompt"></canvas>
+  </div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Response harmfulness</div>
+    <canvas id="chart-wg-resp"></canvas>
+  </div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Response refusal</div>
+    <canvas id="chart-wg-refusal"></canvas>
+  </div>
+</div>
+{% endif %}
+{% if stats.guard_stats.qwen3guard.n_scored > 0 %}
+<div class="guard-row">
+  <div class="guard-row-label">Qwen3Guard<span class="guard-row-n">{{ stats.guard_stats.qwen3guard.n_scored }} scored</span></div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Prompt safety</div>
+    <canvas id="chart-q3-prompt"></canvas>
+  </div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Response safety</div>
+    <canvas id="chart-q3-resp"></canvas>
+  </div>
+  <div class="guard-donut-item">
+    <div class="guard-donut-title">Response refusal</div>
+    <canvas id="chart-q3-refusal"></canvas>
+  </div>
+</div>
+{% endif %}
+
+<!-- Response harmfulness per model -->
+<div class="charts-row">
+  {% if stats.guard_stats.wildguard.n_scored > 0 %}
+  <div class="chart-col">
+    <h2 class="section-title" style="font-size:0.95rem">WildGuard — Response harmfulness per model</h2>
+    <div class="chart-box-wide" id="box-wg-model"><canvas id="chart-wg-model"></canvas></div>
+  </div>
+  {% endif %}
+  {% if stats.guard_stats.qwen3guard.n_scored > 0 %}
+  <div class="chart-col">
+    <h2 class="section-title" style="font-size:0.95rem">Qwen3Guard — Response safety per model</h2>
+    <div class="chart-box-wide" id="box-q3-model"><canvas id="chart-q3-model"></canvas></div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Qwen3Guard categories -->
+{% if stats.guard_stats.qwen3guard.n_scored > 0 %}
+<div class="charts-row">
+  <div class="chart-col">
+    <h2 class="section-title" style="font-size:0.95rem">Qwen3Guard — Prompt categories</h2>
+    <div class="chart-box-wide"><canvas id="chart-q3-pcats"></canvas></div>
+  </div>
+  <div class="chart-col">
+    <h2 class="section-title" style="font-size:0.95rem">Qwen3Guard — Response categories</h2>
+    <div class="chart-box-wide"><canvas id="chart-q3-rcats"></canvas></div>
+  </div>
+</div>
+{% endif %}
+{% endif %}
 
 <script>
 const isDark = () => document.documentElement.dataset.theme === "dark";
@@ -198,6 +277,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const labels = Object.keys(trajCounts);
   const counts = labels.map(l => trajCounts[l]);
   const colors = labels.map(l => TRAJ_COLORS[l] || "#888");
+  sizeBarChart("chart-trajectory", labels.length);
   charts["trajectory"] = new Chart(document.getElementById("chart-trajectory"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: colors, borderColor: colors, borderWidth: 1 }] },
@@ -228,12 +308,21 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   });
 })();
 
+// ── Helpers for auto-sized horizontal bar charts ────────────────────────────
+function sizeBarChart(canvasId, nItems) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const box = canvas.closest('.chart-box-wide');
+  if (box) box.style.height = Math.max(180, Math.min(520, nItems * 32 + 48)) + 'px';
+}
+
 // ── Model chart ─────────────────────────────────────────────────────────────
 (function() {
   const d = {{ stats.model_counts | tojson }};
   const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
   const full   = Object.keys(d);
   const counts = Object.values(d);
+  sizeBarChart("chart-model", labels.length);
   charts["model"] = new Chart(document.getElementById("chart-model"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#89b4fa", borderColor: "#89b4fa", borderWidth: 1 }] },
@@ -248,6 +337,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const labels = Object.keys(d).map(m => { const p = m.split("/"); return p[p.length-1]; });
   const full   = Object.keys(d);
   const counts = Object.values(d);
+  sizeBarChart("chart-judge", labels.length);
   charts["judge"] = new Chart(document.getElementById("chart-judge"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#cba6f7", borderColor: "#cba6f7", borderWidth: 1 }] },
@@ -261,6 +351,7 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   const d = {{ stats.dataset_counts | tojson }};
   const labels = Object.keys(d);
   const counts = Object.values(d);
+  sizeBarChart("chart-dataset", labels.length);
   charts["dataset"] = new Chart(document.getElementById("chart-dataset"), {
     type: "bar",
     data: { labels, datasets: [{ data: counts, backgroundColor: "#a7c080", borderColor: "#a7c080", borderWidth: 1 }] },
@@ -311,9 +402,146 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   
   renderHeatmap();
 })();
+
+// ── Guard Safety Score charts ───────────────────────────────────────────────
+const GUARD_STATS = {{ stats.guard_stats | tojson }};
+
+const GUARD_COLORS = {
+  harmful:       "#e67e80",
+  unharmful:     "#a7c080",
+  refusal:       "#a7c080",
+  compliance:    "#e67e80",
+  Unsafe:        "#e67e80",
+  Safe:          "#a7c080",
+  Controversial: "#dbbc7f",
+  Yes:           "#a7c080",
+  No:            "#e67e80",
+  none:          "#888888",
+};
+
+function makeGuardDonut(canvasId, dataObj) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  const labels = Object.keys(dataObj);
+  const data   = Object.values(dataObj);
+  const colors = labels.map(l => GUARD_COLORS[l] || "#7fbbb3");
+  charts[canvasId] = new Chart(ctx, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 1 }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { color: chartColors().tick, boxWidth: 10, font: { size: 10 }, padding: 6 },
+        },
+      },
+    },
+  });
+}
+
+function makeStackedBar(canvasId, boxId, modelData, keys, colors) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  const models = Object.keys(modelData);
+  const shortM = m => { const p = m.split("/"); return p[p.length-1]; };
+  sizeBarChart(canvasId, models.length);
+  const datasets = keys.map((k, i) => ({
+    label: k,
+    data: models.map(m => modelData[m][k] || 0),
+    backgroundColor: colors[i],
+    borderWidth: 0,
+  }));
+  charts[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: { labels: models.map(shortM), datasets },
+    options: {
+      indexAxis: "y",
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "top", labels: { color: chartColors().tick, boxWidth: 12, font: { size: 11 } } },
+      },
+      scales: {
+        x: { stacked: true, grid: { color: chartColors().grid }, ticks: { color: chartColors().tick } },
+        y: { stacked: true, grid: { display: false }, ticks: { color: chartColors().tick } },
+      },
+    },
+  });
+}
+
+(function() {
+  const wg = GUARD_STATS.wildguard;
+  if (wg && wg.n_scored > 0) {
+    makeGuardDonut("chart-wg-prompt",  wg.prompt_harmfulness);
+    makeGuardDonut("chart-wg-resp",    wg.response_harmfulness);
+    makeGuardDonut("chart-wg-refusal", wg.response_refusal);
+    if (Object.keys(GUARD_STATS.model_wg_resp_harm).length) {
+      makeStackedBar(
+        "chart-wg-model", "box-wg-model",
+        GUARD_STATS.model_wg_resp_harm,
+        ["harmful", "unharmful", "none"],
+        ["#e67e80", "#a7c080", "#888888"]
+      );
+    }
+  }
+
+  const q3 = GUARD_STATS.qwen3guard;
+  if (q3 && q3.n_scored > 0) {
+    makeGuardDonut("chart-q3-prompt",  q3.prompt_safety);
+    makeGuardDonut("chart-q3-resp",    q3.response_safety);
+    makeGuardDonut("chart-q3-refusal", q3.response_refusal);
+    if (Object.keys(GUARD_STATS.model_q3_resp_safety).length) {
+      makeStackedBar(
+        "chart-q3-model", "box-q3-model",
+        GUARD_STATS.model_q3_resp_safety,
+        ["Unsafe", "Safe", "Controversial", "none"],
+        ["#e67e80", "#a7c080", "#dbbc7f", "#888888"]
+      );
+    }
+
+    function makeCatBar(canvasId, dataObj) {
+      const ctx = document.getElementById(canvasId);
+      if (!ctx || !Object.keys(dataObj).length) return;
+      const labels = Object.keys(dataObj);
+      const data   = Object.values(dataObj);
+      sizeBarChart(canvasId, labels.length);
+      charts[canvasId] = new Chart(ctx, {
+        type: "bar",
+        data: { labels, datasets: [{ data, backgroundColor: "#7fbbb3", borderColor: "#7fbbb3", borderWidth: 1 }] },
+        options: { ...baseBarOpts(true) },
+      });
+    }
+    makeCatBar("chart-q3-pcats", q3.prompt_categories);
+    makeCatBar("chart-q3-rcats", q3.response_categories);
+  }
+})();
 </script>
 
 <style>
+.stats-controls { display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem; }
+.toggle-btn {
+  display: inline-block;
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1.5px solid var(--bg-3);
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.toggle-btn:hover { border-color: var(--accent, #83c092); color: var(--fg); }
+.toggle-btn-active {
+  background: #e67e80;
+  border-color: #e67e80;
+  color: #fff;
+}
+.toggle-btn-active:hover { background: #d16668; border-color: #d16668; color: #fff; }
+
 .stats-summary { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:2rem; }
 .stat-card { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
              padding:1.2rem 1.8rem; min-width:160px; text-align:center; flex: 1; }
@@ -374,7 +602,8 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
 .chart-box canvas { padding:12px; flex: 1; min-height: 0; }
 
 .chart-box-wide { background:var(--bg-2); border:1px solid var(--bg-3); border-radius:8px;
-                  padding:16px; position: relative; }
+                  padding:16px; position: relative; height: 280px; overflow: hidden; }
+.chart-box-wide.chart-box-auto { height: auto; overflow: visible; }
 
 /* Dynamic group colors */
 {% for gid, gdata in label_groups.items() %}
@@ -390,6 +619,57 @@ const LABEL_GROUPS = {{ label_groups | tojson }};
   --box-border: {{ color }};
 }
 {% endfor %}
+
+/* Guard Safety Scores */
+.guard-row {
+  display: flex;
+  align-items: stretch;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.guard-row-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 8px;
+  padding: 10px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.guard-row-n {
+  font-size: 0.65rem;
+  font-weight: 400;
+  opacity: 0.7;
+}
+.guard-donut-item {
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--bg-3);
+  border-radius: 8px;
+  padding: 10px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  height: 200px;
+  min-width: 0;
+}
+.guard-donut-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--fg);
+  text-align: center;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+}
+.guard-donut-item canvas { flex: 1; min-height: 0; }
 
 /* Heatmap */
 .heatmap-wrap { overflow-x:auto; margin-bottom:2rem; }

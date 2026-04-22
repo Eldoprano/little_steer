@@ -14,8 +14,8 @@ _TAXONOMY_PATH = Path(__file__).parents[2] / "taxonomy.json"
 
 from sentence_labeler.taxonomy_loader import get_taxonomy_version
 
-_DEFAULT_DATA_DIR = Path(__file__).parents[3] / "data" / "2b_labeled" / get_taxonomy_version()
-DATA_DIR: Path = Path(os.environ["VIEWER_DATA_DIR"]) if "VIEWER_DATA_DIR" in os.environ else _DEFAULT_DATA_DIR
+_DEFAULT_DATASET = Path(__file__).parents[3] / "data" / "dataset.jsonl"
+DATA_DIR: Path = Path(os.environ["VIEWER_DATA_DIR"]) if "VIEWER_DATA_DIR" in os.environ else _DEFAULT_DATASET
 
 # ── Label group metadata (loaded from taxonomy.json) ─────────────────────────
 
@@ -106,10 +106,102 @@ def _extract_dataset_name(path: Path, entry: dict[str, Any]) -> str:
     return (entry.get("metadata") or {}).get("dataset_name") or path.stem
 
 
-def load_all_entries(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
-    """Load all JSONL files, return list of dicts with 'source_file' added."""
+def _active_or_latest_run(entry: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = entry.get("metadata") or {}
+    active_key = metadata.get("active_label_run")
+    runs = entry.get("label_runs") or []
+    if active_key:
+        for run in runs:
+            run_key = "::".join([
+                run.get("judge_name", ""),
+                run.get("taxonomy_version", ""),
+                run.get("generation_hash", ""),
+            ])
+            if run_key == active_key:
+                return run
+    return runs[-1] if runs else None
+
+
+def _safety_scores_for_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    current_hash = (entry.get("metadata") or {}).get("generation_hash")
+    scores: dict[str, Any] = {}
+    for run in entry.get("safety_runs") or []:
+        if current_hash and run.get("generation_hash") != current_hash:
+            continue
+        guard_name = run.get("guard_name")
+        if guard_name:
+            payload = dict(run.get("result") or {})
+            if run.get("scored_at"):
+                payload["scored_at"] = run["scored_at"]
+            scores[guard_name] = payload
+    return scores
+
+
+def _materialize_version(
+    entry: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    source_file: str,
+    dataset_name: str,
+) -> dict[str, Any]:
+    materialized = dict(entry)
+    metadata = dict(entry.get("metadata") or {})
+    metadata["assessment"] = dict(run.get("assessment") or {})
+    metadata["labeled_at"] = run.get("labeled_at", "")
+    metadata["taxonomy_version"] = run.get("taxonomy_version", "")
+    if run.get("reasoning_truncated"):
+        metadata["reasoning_truncated"] = True
+    else:
+        metadata.pop("reasoning_truncated", None)
+    metadata["active_label_run"] = "::".join([
+        run.get("judge_name", ""),
+        run.get("taxonomy_version", ""),
+        run.get("generation_hash", ""),
+    ])
+    metadata["safety_scores"] = _safety_scores_for_entry(entry)
+
+    materialized["annotations"] = list(run.get("spans") or [])
+    materialized["judge"] = run.get("judge_name", "")
+    materialized["metadata"] = metadata
+    materialized["source_file"] = source_file
+    materialized["_dataset_name"] = dataset_name
+    materialized["run_key"] = metadata["active_label_run"]
+    return materialized
+
+
+def _expand_entry_versions(
+    entry: dict[str, Any],
+    *,
+    source_file: str,
+    dataset_name: str,
+    labeled_only: bool,
+) -> list[dict[str, Any]]:
+    runs = entry.get("label_runs") or []
+    if not runs:
+        if labeled_only:
+            return []
+        active = _active_or_latest_run(entry)
+        if active is not None:
+            return [_materialize_version(entry, active, source_file=source_file, dataset_name=dataset_name)]
+        fallback = dict(entry)
+        fallback["source_file"] = source_file
+        fallback["_dataset_name"] = dataset_name
+        fallback.setdefault("metadata", {})
+        fallback["metadata"] = dict(fallback["metadata"])
+        fallback["metadata"]["safety_scores"] = _safety_scores_for_entry(entry)
+        fallback["run_key"] = ""
+        return [fallback]
+    return [
+        _materialize_version(entry, run, source_file=source_file, dataset_name=dataset_name)
+        for run in runs
+    ]
+
+
+def load_all_entries(data_dir: Path = DATA_DIR, *, labeled_only: bool = True) -> list[dict[str, Any]]:
+    """Load canonical dataset entries, expanded to one viewer record per label run."""
     entries: list[dict[str, Any]] = []
-    for path in sorted(data_dir.glob("*.jsonl")):
+    paths = [data_dir] if data_dir.is_file() else sorted(data_dir.glob("*.jsonl"))
+    for path in paths:
         source = _source_name(path)
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -118,18 +210,25 @@ def load_all_entries(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
                     continue
                 try:
                     entry = json.loads(line)
-                    entry["source_file"] = source
-                    entry.setdefault("_dataset_name", _extract_dataset_name(path, entry))
-                    entries.append(entry)
+                    dataset_name = _extract_dataset_name(path, entry)
+                    entries.extend(
+                        _expand_entry_versions(
+                            entry,
+                            source_file=source,
+                            dataset_name=dataset_name,
+                            labeled_only=labeled_only,
+                        )
+                    )
                 except json.JSONDecodeError:
                     pass
     return entries
 
 
 def get_all_versions(entry_id: str, reasoning_hash: str, data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
-    """Return all labeled versions of an entry (same id and same reasoning text)."""
+    """Return all label-run versions of one canonical entry."""
     versions: list[dict[str, Any]] = []
-    for path in sorted(data_dir.glob("*.jsonl")):
+    paths = [data_dir] if data_dir.is_file() else sorted(data_dir.glob("*.jsonl"))
+    for path in paths:
         source = _source_name(path)
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -139,38 +238,29 @@ def get_all_versions(entry_id: str, reasoning_hash: str, data_dir: Path = DATA_D
                 try:
                     entry = json.loads(line)
                     if entry.get("id") == entry_id and _get_reasoning_hash(entry) == reasoning_hash:
-                        entry["source_file"] = source
-                        entry["_dataset_name"] = _extract_dataset_name(path, entry)
-                        versions.append(entry)
+                        dataset_name = _extract_dataset_name(path, entry)
+                        versions.extend(
+                            _expand_entry_versions(
+                                entry,
+                                source_file=source,
+                                dataset_name=dataset_name,
+                                labeled_only=True,
+                            )
+                        )
                 except json.JSONDecodeError:
                     pass
     return versions
 
 
 def get_entry(entry_id: str, reasoning_hash: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
-    """Find a single entry by id and reasoning hash (scans all files)."""
-    for path in sorted(data_dir.glob("*.jsonl")):
-        source = _source_name(path)
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get("id") == entry_id and _get_reasoning_hash(entry) == reasoning_hash:
-                        entry["source_file"] = source
-                        entry["_dataset_name"] = _extract_dataset_name(path, entry)
-                        return entry
-                except json.JSONDecodeError:
-                    pass
-    return None
+    """Find a single labeled viewer version by id and reasoning hash."""
+    versions = get_all_versions(entry_id, reasoning_hash, data_dir)
+    return versions[0] if versions else None
 
 
 def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
     models: set[str] = set()
-    datasets: set[str] = set()
-    dataset_names: dict[str, str] = {}  # source_file → dataset_name
+    dataset_names: set[str] = set()  # unique human-readable dataset names
     trajectories: set[str] = set()
     alignments: set[str] = set()
     judges: set[str] = set()
@@ -178,12 +268,11 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
     for e in entries:
         if e.get("model"):
             models.add(e["model"])
-        if e.get("source_file"):
-            sf = e["source_file"]
-            datasets.add(sf)
-            dn = (e.get("_dataset_name") or
-                  (e.get("metadata") or {}).get("dataset_name") or sf)
-            dataset_names[sf] = dn
+        dn = (e.get("_dataset_name") or
+              (e.get("metadata") or {}).get("dataset_name") or
+              e.get("source_file", ""))
+        if dn:
+            dataset_names.add(dn)
         assessment = (e.get("metadata") or {}).get("assessment") or {}
         if assessment.get("trajectory"):
             trajectories.add(assessment["trajectory"])
@@ -208,8 +297,7 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
 
     return {
         "models": sorted(models),
-        "datasets": sorted(datasets),
-        "dataset_names": dataset_names,
+        "datasets": sorted(dataset_names),
         "trajectories": sorted(trajectories),
         "alignments": sorted(alignments),
         "judges": sorted(judges),
@@ -220,28 +308,32 @@ def get_filter_options(entries: list[dict[str, Any]]) -> dict[str, list[str]]:
 def get_grouped_summaries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Produce lightweight summary dicts for the index page, grouped by id + response text."""
     groups: dict[tuple[str, str], dict[str, Any]] = {}
-    
+
     for entry in entries:
         h = _get_reasoning_hash(entry)
         eid = entry.get("id", "")
         key = (eid, h)
-        
+
         annotations = entry.get("annotations") or []
         metadata = entry.get("metadata") or {}
         assessment = metadata.get("assessment") or {}
-        
+        safety_scores = metadata.get("safety_scores") or {}
+
         scores = [a.get("score", 0) for a in annotations if a.get("score") is not None]
-        
+
         user_prompt = ""
         for msg in (entry.get("messages") or []):
             if msg.get("role") == "user":
                 user_prompt = msg.get("content", "")[:200]
                 break
-                
+
         label_ids = list(dict.fromkeys(lbl for ann in annotations for lbl in (ann.get("labels") or [])))
         behaviour_groups = list(dict.fromkeys(label_group(l) for l in label_ids))
         dataset_name = entry.get("_dataset_name") or metadata.get("dataset_name") or entry.get("source_file", "")
-        
+
+        wg = safety_scores.get("wildguard") or {}
+        q3 = safety_scores.get("qwen3guard") or {}
+
         if key not in groups:
             groups[key] = {
                 "id": eid,
@@ -259,6 +351,12 @@ def get_grouped_summaries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "labeled_at": metadata.get("labeled_at", ""),
                 "behaviours": [],
                 "label_ids": [],
+                "wg_prompt_harm": wg.get("prompt_harmfulness"),
+                "wg_resp_harm": wg.get("response_harmfulness"),
+                "wg_resp_refusal": wg.get("response_refusal"),
+                "q3_prompt_safety": q3.get("prompt_safety"),
+                "q3_resp_safety": q3.get("response_safety"),
+                "q3_resp_refusal": q3.get("response_refusal"),
             }
             
         g = groups[key]
@@ -301,6 +399,23 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     alignment_counts: dict[str, int] = {}
     score_buckets: list[int] = [0, 0, 0]  # -1, 0, +1
     model_dataset_counts: dict[str, dict[str, int]] = {}  # model → dataset_name → count
+
+    # Safety guard stats — deduplicated by entry ID to avoid counting the same
+    # generated entry once per labeler version
+    _seen_guard_ids: set[str] = set()
+    wg_prompt_harm: dict[str, int] = {}
+    wg_resp_harm: dict[str, int] = {}
+    wg_resp_refusal: dict[str, int] = {}
+    wg_n_scored = 0
+    q3_prompt_safety: dict[str, int] = {}
+    q3_resp_safety: dict[str, int] = {}
+    q3_resp_refusal: dict[str, int] = {}
+    q3_prompt_cats: dict[str, int] = {}
+    q3_resp_cats: dict[str, int] = {}
+    q3_n_scored = 0
+    # per-model response harmfulness
+    model_wg_resp_harm: dict[str, dict[str, int]] = {}
+    model_q3_resp_safety: dict[str, dict[str, int]] = {}
 
     total_annotations = 0
     entries_with_annotations = 0
@@ -356,6 +471,46 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         if aln:
             alignment_counts[aln] = alignment_counts.get(aln, 0) + 1
 
+        # Safety guard stats (deduplicated by entry ID)
+        eid = entry.get("id", "")
+        if eid and eid not in _seen_guard_ids:
+            _seen_guard_ids.add(eid)
+            safety_scores = metadata.get("safety_scores") or {}
+
+            wg = safety_scores.get("wildguard") or {}
+            if wg:
+                wg_n_scored += 1
+                for key_field, bucket in [
+                    ("prompt_harmfulness", wg_prompt_harm),
+                    ("response_harmfulness", wg_resp_harm),
+                    ("response_refusal", wg_resp_refusal),
+                ]:
+                    v = wg.get(key_field) or "none"
+                    bucket[v] = bucket.get(v, 0) + 1
+                m = entry.get("model") or "unknown"
+                v = wg.get("response_harmfulness") or "none"
+                model_wg_resp_harm.setdefault(m, {})
+                model_wg_resp_harm[m][v] = model_wg_resp_harm[m].get(v, 0) + 1
+
+            q3 = safety_scores.get("qwen3guard") or {}
+            if q3:
+                q3_n_scored += 1
+                for key_field, bucket in [
+                    ("prompt_safety", q3_prompt_safety),
+                    ("response_safety", q3_resp_safety),
+                    ("response_refusal", q3_resp_refusal),
+                ]:
+                    v = q3.get(key_field) or "none"
+                    bucket[v] = bucket.get(v, 0) + 1
+                for cat in (q3.get("prompt_categories") or []):
+                    q3_prompt_cats[cat] = q3_prompt_cats.get(cat, 0) + 1
+                for cat in (q3.get("response_categories") or []):
+                    q3_resp_cats[cat] = q3_resp_cats.get(cat, 0) + 1
+                m = entry.get("model") or "unknown"
+                v = q3.get("response_safety") or "none"
+                model_q3_resp_safety.setdefault(m, {})
+                model_q3_resp_safety[m][v] = model_q3_resp_safety[m].get(v, 0) + 1
+
     # Build per-group label breakdown (ordered by group definition)
     group_label_counts: dict[str, dict[str, int]] = {}
     for gid, gdata in LABEL_GROUPS.items():
@@ -384,6 +539,24 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "model_dataset_counts": model_dataset_counts,
         "heatmap_models": all_heatmap_models,
         "heatmap_datasets": all_heatmap_datasets,
+        "guard_stats": {
+            "wildguard": {
+                "n_scored": wg_n_scored,
+                "prompt_harmfulness": wg_prompt_harm,
+                "response_harmfulness": wg_resp_harm,
+                "response_refusal": wg_resp_refusal,
+            },
+            "qwen3guard": {
+                "n_scored": q3_n_scored,
+                "prompt_safety": q3_prompt_safety,
+                "response_safety": q3_resp_safety,
+                "response_refusal": q3_resp_refusal,
+                "prompt_categories": dict(sorted(q3_prompt_cats.items(), key=lambda x: -x[1])),
+                "response_categories": dict(sorted(q3_resp_cats.items(), key=lambda x: -x[1])),
+            },
+            "model_wg_resp_harm": model_wg_resp_harm,
+            "model_q3_resp_safety": model_q3_resp_safety,
+        },
     }
 
 

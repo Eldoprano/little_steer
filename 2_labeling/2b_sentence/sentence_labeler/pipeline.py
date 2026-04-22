@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -27,7 +28,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from thesis_schema import AnnotatedSpan, ConversationEntry
+from thesis_schema import AnnotatedSpan, ConversationEntry, LabelRun, label_run_key
 
 from .labeler import BillingQuotaError, LabelingError, build_client, format_prompt, label_entry, load_secrets
 from .mapper import map_sentences_to_spans
@@ -42,7 +43,7 @@ class TokenBudget:
 
     def __init__(self, daily_limit: int, state_file: Path):
         self.daily_limit = daily_limit
-        self.safety_limit = int(daily_limit * 0.95)  # Stop at 95% to avoid overages with concurrent workers
+        self.safety_limit = int(daily_limit * 0.98)  # Stop at 98% to avoid overages with concurrent workers
         self.state_file = state_file
         self._lock = threading.Lock()
         self._today = datetime.now(timezone.utc).date().isoformat()
@@ -312,11 +313,37 @@ def _find_user_msg(entry: ConversationEntry) -> str:
     return ""
 
 
-def _scan_existing_ids(output_path: Path) -> set[str]:
-    """Scan an existing output JSONL to collect already-written entry IDs."""
+def _compute_generation_hash(entry: ConversationEntry) -> str:
+    """MD5 of reasoning content — matches generate_responses.make_generation_hash."""
+    reasoning = entry.get_reasoning_content() or ""
+    return hashlib.md5(reasoning.encode("utf-8")).hexdigest()[:16]
+
+
+def _matching_label_run(
+    entry: ConversationEntry,
+    *,
+    judge_name: str,
+    taxonomy_version: str,
+    generation_hash: str,
+) -> LabelRun | None:
+    target_key = label_run_key(judge_name, taxonomy_version, generation_hash)
+    for run in entry.label_runs:
+        if run.key == target_key:
+            return run
+    return None
+
+
+def _scan_existing_ids(output_path: Path) -> tuple[set[str], dict[str, str]]:
+    """Scan an existing output JSONL.
+
+    Returns (done_ids, id_to_generation_hash).
+    The hash map lets the caller detect when the source entry was regenerated
+    since the last labeling run.
+    """
     ids: set[str] = set()
+    hashes: dict[str, str] = {}
     if not output_path.exists():
-        return ids
+        return ids, hashes
     with open(output_path) as f:
         for line in f:
             line = line.strip()
@@ -324,11 +351,15 @@ def _scan_existing_ids(output_path: Path) -> set[str]:
                 continue
             try:
                 data = json.loads(line)
-                if "id" in data:
-                    ids.add(data["id"])
+                eid = data.get("id")
+                if eid:
+                    ids.add(eid)
+                    ghash = (data.get("metadata") or {}).get("generation_hash")
+                    if ghash:
+                        hashes[eid] = ghash
             except json.JSONDecodeError:
                 pass
-    return ids
+    return ids, hashes
 
 
 def apply_labeling_output(
@@ -336,12 +367,13 @@ def apply_labeling_output(
     output: LabelingOutput,
     reasoning_msg_idx: int,
     judge_name: str,
+    judge_model_id: str,
     mapper_cfg: MapperConfig,
     warn_fn: callable | None = None,
     taxonomy_version: str = "",
     reasoning_truncated: bool = False,
 ) -> ConversationEntry:
-    """Return a new ConversationEntry with annotations and assessment filled in."""
+    """Return a new ConversationEntry with canonical label-runs updated."""
     reasoning_text = entry.messages[reasoning_msg_idx]["content"]
 
     spans: list[AnnotatedSpan] = map_sentences_to_spans(
@@ -352,27 +384,38 @@ def apply_labeling_output(
         warn_fn=warn_fn,
     )
 
-    new_metadata = dict(entry.metadata)
-    new_metadata["assessment"] = {
+    new_entry = entry.model_copy(deep=True)
+    new_metadata = dict(new_entry.metadata)
+    assessment = {
         "trajectory": output.assessment.trajectory,
         "turning_point": output.assessment.turning_point,
         "alignment": output.assessment.alignment,
     }
-    new_metadata["judge_name"] = judge_name
-    new_metadata["labeled_at"] = datetime.now(timezone.utc).isoformat()
-    if taxonomy_version:
-        new_metadata["taxonomy_version"] = taxonomy_version
-    if reasoning_truncated:
-        new_metadata["reasoning_truncated"] = True
+    labeled_at = datetime.now(timezone.utc).isoformat()
+    generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
 
-    return ConversationEntry(
-        id=entry.id,
-        messages=entry.messages,
-        annotations=spans,
-        model=entry.model,
-        judge=judge_name,
-        metadata=new_metadata,
+    # Keep only the latest prompt version requested by the user.
+    new_entry.label_runs = [
+        run for run in new_entry.label_runs if run.taxonomy_version == taxonomy_version
+    ]
+    run = LabelRun(
+        judge_name=judge_name,
+        judge_model_id=judge_model_id,
+        taxonomy_version=taxonomy_version,
+        labeled_at=labeled_at,
+        generation_hash=generation_hash,
+        reasoning_truncated=reasoning_truncated,
+        assessment=assessment,
+        sentence_annotations=[sentence.model_dump() for sentence in output.sentences],
+        spans=spans,
+        usage=output.metadata.get("usage", {}),
+        finish_reason=output.metadata.get("finish_reason", ""),
+        status="completed",
+        error=None,
     )
+    new_entry.metadata = new_metadata
+    new_entry.upsert_label_run(run, activate=True)
+    return new_entry
 
 
 # ── File processor ────────────────────────────────────────────────────────────
@@ -403,13 +446,19 @@ def process_file(
         (labeled_count, skipped_count, failed_count, budget_stopped_count)
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    in_place = output_path.resolve() == input_path.resolve()
 
     checkpoint = CheckpointManager(output_path.with_suffix(".checkpoint.json"))
     if reset_checkpoints:
         checkpoint.delete()
 
-    done_ids = checkpoint.load()
-    done_ids |= _scan_existing_ids(output_path)
+    if in_place:
+        done_ids: set[str] = set()
+        done_hashes: dict[str, str] = {}
+    else:
+        done_ids = checkpoint.load()
+        scanned_ids, done_hashes = _scan_existing_ids(output_path)
+        done_ids |= scanned_ids
 
     # Load all entries into memory (needed for total count in progress bar)
     entries: list[ConversationEntry] = []
@@ -437,6 +486,7 @@ def process_file(
     failed = 0
     budget_stopped = 0
     since_checkpoint = 0
+    updated_entries: dict[str, ConversationEntry] = {}
 
     # Per-file entry cap: tracks successful labels (not attempts) so that
     # content-filter failures don't eat the per-file budget.
@@ -445,9 +495,19 @@ def process_file(
 
     def _process_one(entry: ConversationEntry) -> str:
         """Process a single entry. Returns "labeled", "skipped", "budget", or "failed"."""
-        # Skip already done
+        # Skip already done — but re-label if the generation changed since last run
         if entry.id in done_ids:
-            return "skipped"
+            source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
+            stored_hash = done_hashes.get(entry.id)
+            if stored_hash and source_hash and source_hash != stored_hash:
+                console.print(
+                    f"[yellow]  Generation changed [{entry.id[:12]}] — re-labeling "
+                    f"(old={stored_hash[:8]} new={source_hash[:8]})[/yellow]"
+                )
+                done_ids.discard(entry.id)
+                checkpoint.mark_failed(entry.id, "stale: generation changed, re-labeling")
+            else:
+                return "skipped"
 
         # Quick limit checks before any heavy work
         if token_budget is not None and not token_budget.can_proceed():
@@ -464,8 +524,17 @@ def process_file(
         if entry.metadata.get("approved") is False:
             return "skipped"
 
-        # Skip if already annotated (and not overwriting)
-        if entry.annotations and not pipeline_cfg.overwrite_existing:
+        generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
+        if (
+            _matching_label_run(
+                entry,
+                judge_name=judge_cfg.name,
+                taxonomy_version=taxonomy_version,
+                generation_hash=generation_hash,
+            )
+            is not None
+            and not pipeline_cfg.overwrite_existing
+        ):
             return "skipped"
 
         # Find reasoning message
@@ -571,6 +640,7 @@ def process_file(
             output=labeling_output,
             reasoning_msg_idx=reasoning_idx,
             judge_name=judge_cfg.name,
+            judge_model_id=judge_cfg.model_id,
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
             taxonomy_version=taxonomy_version,
@@ -579,8 +649,11 @@ def process_file(
 
         # Write to output (serialized)
         with write_lock:
-            with open(output_path, "a", encoding="utf-8") as f:
-                f.write(updated_entry.model_dump_json() + "\n")
+            if in_place:
+                updated_entries[entry.id] = updated_entry
+            else:
+                with open(output_path, "a", encoding="utf-8") as f:
+                    f.write(updated_entry.model_dump_json() + "\n")
             checkpoint.mark_done(entry.id)
             per_file_labeled[0] += 1
             if per_file_max is not None and per_file_labeled[0] >= per_file_max:
@@ -612,6 +685,14 @@ def process_file(
                 failed += 1
 
             progress.advance(file_task)
+
+    if in_place and updated_entries:
+        rewritten = [updated_entries.get(entry.id, entry) for entry in entries]
+        tmp = output_path.with_suffix(".jsonl.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for entry in rewritten:
+                f.write(entry.model_dump_json() + "\n")
+        tmp.replace(output_path)
 
     checkpoint.save()
     return labeled, skipped, failed, budget_stopped
@@ -656,6 +737,7 @@ def process_breadth_first(
     output_paths: dict[str, Path] = {}
     checkpoints: dict[str, CheckpointManager] = {}
     done_ids_per_file: dict[str, set[str]] = {}
+    done_hashes_per_file: dict[str, dict[str, str]] = {}
     write_locks: dict[str, threading.Lock] = {}
 
     for fname in file_names:
@@ -665,7 +747,9 @@ def process_breadth_first(
         if reset_checkpoints:
             cp.delete()
         checkpoints[fname] = cp
-        done_ids_per_file[fname] = cp.load() | _scan_existing_ids(out)
+        scanned_ids, scanned_hashes = _scan_existing_ids(out)
+        done_ids_per_file[fname] = cp.load() | scanned_ids
+        done_hashes_per_file[fname] = scanned_hashes
         write_locks[fname] = threading.Lock()
 
     # Load all source entries into memory
@@ -703,8 +787,21 @@ def process_breadth_first(
         eid = item["id"]
         entry = all_entries[fname].get(eid)
 
-        if entry is None or eid in done_ids_per_file.get(fname, set()):
+        if entry is None:
             return "skipped"
+        if eid in done_ids_per_file.get(fname, set()):
+            # Re-label if the generation changed since last run
+            source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
+            stored_hash = done_hashes_per_file.get(fname, {}).get(eid)
+            if stored_hash and source_hash and source_hash != stored_hash:
+                console.print(
+                    f"[yellow]  Generation changed [{eid[:12]}] — re-labeling "
+                    f"(old={stored_hash[:8]} new={source_hash[:8]})[/yellow]"
+                )
+                done_ids_per_file.setdefault(fname, set()).discard(eid)
+                checkpoints[fname].mark_failed(eid, "stale: generation changed, re-labeling")
+            else:
+                return "skipped"
         if token_budget is not None and not token_budget.can_proceed():
             return "budget"
         if rate_limiter is not None and not rate_limiter.can_proceed():
@@ -714,7 +811,17 @@ def process_breadth_first(
         # Skip entries flagged as low quality.
         if entry.metadata.get("approved") is False:
             return "skipped"
-        if entry.annotations and not pipeline_cfg.overwrite_existing:
+        generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
+        if (
+            _matching_label_run(
+                entry,
+                judge_name=judge_cfg.name,
+                taxonomy_version=taxonomy_version,
+                generation_hash=generation_hash,
+            )
+            is not None
+            and not pipeline_cfg.overwrite_existing
+        ):
             return "skipped"
 
         reasoning_idx = _find_reasoning_msg_idx(entry)
@@ -800,6 +907,7 @@ def process_breadth_first(
             output=labeling_output,
             reasoning_msg_idx=reasoning_idx,
             judge_name=judge_cfg.name,
+            judge_model_id=judge_cfg.model_id,
             mapper_cfg=mapper_cfg,
             warn_fn=warn,
             taxonomy_version=taxonomy_version,
@@ -853,7 +961,7 @@ def resolve_output_path(
     suffix: str,
     in_place: bool,
 ) -> Path:
-    if in_place:
+    if in_place or input_path.name == "dataset.jsonl":
         return input_path
     stem = input_path.stem + suffix
     return output_dir / (stem + ".jsonl")

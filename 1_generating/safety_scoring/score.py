@@ -52,45 +52,47 @@ from rich.text import Text
 
 _SCRIPT_DIR = Path(__file__).parent
 DATA_ROOT = _SCRIPT_DIR.parent.parent / "data"
-GENERATED_DIR = DATA_ROOT / "1_generated"
-LABELED_DIR = DATA_ROOT / "2b_labeled"
-CHECKPOINT_DIR = GENERATED_DIR / ".safety_scores"
+DATASET_PATH = DATA_ROOT / "dataset.jsonl"
+CHECKPOINT_DIR = DATA_ROOT / ".safety_scores"
+
+sys.path.insert(0, str(DATA_ROOT))
+from thesis_schema import ConversationEntry, SafetyRun  # noqa: E402
 
 console = Console()
 
 # ─── JSONL helpers ────────────────────────────────────────────────────────────
 
 
-def read_jsonl(path: Path) -> list[dict]:
-    entries = []
+def read_jsonl(path: Path) -> list[ConversationEntry]:
+    entries: list[ConversationEntry] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
-                entries.append(json.loads(line))
+                entries.append(ConversationEntry.model_validate_json(line))
     return entries
 
 
-def write_jsonl_atomic(path: Path, entries: list[dict]) -> None:
+def write_jsonl_atomic(path: Path, entries: list[ConversationEntry]) -> None:
     """Write to a tmp file then rename — avoids corruption on crash."""
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         for entry in entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write(entry.model_dump_json() + "\n")
     tmp.rename(path)
 
 
-def get_prompt(entry: dict) -> str:
-    for msg in entry.get("messages", []):
-        if "user" in msg:
-            return msg["user"]
+def get_prompt(entry: ConversationEntry) -> str:
+    for msg in entry.messages:
+        if msg.get("role") == "user":
+            return msg.get("content", "")
     return ""
 
 
-def get_response(entry: dict) -> Optional[str]:
-    for msg in entry.get("messages", []):
-        if "assistant" in msg:
-            return msg["assistant"]
+def get_response(entry: ConversationEntry) -> Optional[str]:
+    for msg in entry.messages:
+        if msg.get("role") == "assistant":
+            return msg.get("content") or None
     return None
 
 
@@ -354,44 +356,36 @@ class FileProcessor:
         self.stem = source_file.stem
         self.failures = FailureLog(self.stem, guard)
 
-    def get_pending(self, entries: list[dict]) -> list[dict]:
+    def get_pending(self, entries: list[ConversationEntry]) -> list[ConversationEntry]:
         """Entries that don't yet have a score for this guard."""
         return [
             e for e in entries
-            if self.guard not in e.get("metadata", {}).get("safety_scores", {})
+            if not any(run.guard_name == self.guard and run.generation_hash == e.generation_hash() for run in e.safety_runs)
         ]
 
     @staticmethod
-    def _apply_scores(entries: list[dict], guard: str, score_map: dict) -> None:
+    def _apply_scores(entries: list[ConversationEntry], guard: str, score_map: dict) -> None:
         for entry in entries:
-            eid = entry.get("id", "")
+            eid = entry.id
             if eid in score_map:
-                entry.setdefault("metadata", {}).setdefault("safety_scores", {})[
-                    guard
-                ] = score_map[eid]
+                result = dict(score_map[eid])
+                scored_at = result.pop("scored_at", "")
+                entry.upsert_safety_run(
+                    SafetyRun(
+                        guard_name=guard,
+                        guard_model_id=guard,
+                        scored_at=scored_at,
+                        generation_hash=entry.generation_hash(),
+                        result=result,
+                        status="completed",
+                        error=None,
+                    )
+                )
+                entry.metadata.setdefault("safety_scores", {})[guard] = score_map[eid]
 
-    def save_generated(self, entries: list[dict], score_map: dict) -> None:
+    def save_generated(self, entries: list[ConversationEntry], score_map: dict) -> None:
         self._apply_scores(entries, self.guard, score_map)
         write_jsonl_atomic(self.source_file, entries)
-
-    def propagate_to_labeled(self, score_map: dict) -> int:
-        """Update all data/2b_labeled files whose stem starts with this source stem."""
-        pattern = f"{self.stem}_*.jsonl"
-        updated = 0
-        for lf in LABELED_DIR.glob(pattern):
-            labeled = read_jsonl(lf)
-            changed = False
-            for entry in labeled:
-                eid = entry.get("id", "")
-                if eid in score_map:
-                    entry.setdefault("metadata", {}).setdefault(
-                        "safety_scores", {}
-                    )[self.guard] = score_map[eid]
-                    changed = True
-                    updated += 1
-            if changed:
-                write_jsonl_atomic(lf, labeled)
-        return updated
 
 
 # ─── Guard runner ─────────────────────────────────────────────────────────────
@@ -406,6 +400,7 @@ def _make_progress() -> Progress:
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
+        speed_estimate_period=300,
         console=console,
     )
 
@@ -421,8 +416,9 @@ def run_guard(
     # Check upfront — don't load the model if there's nothing to do.
     total_pending = sum(
         sum(
-            1 for e in read_jsonl(sf)
-            if guard not in e.get("metadata", {}).get("safety_scores", {})
+            1
+            for e in read_jsonl(sf)
+            if not any(run.guard_name == guard and run.generation_hash == e.generation_hash() for run in e.safety_runs)
         )
         for sf in source_files
     )
@@ -494,11 +490,11 @@ def run_guard(
                 try:
                     batch_scores = scorer.score_batch(batch)
                     for entry, score in zip(batch, batch_scores):
-                        score_map[entry.get("id", "")] = score
+                        score_map[entry.id] = score
                 except Exception as exc:
                     console.print(f"  [red]Batch error:[/] {exc}")
                     for entry in batch:
-                        processor.failures.mark_failed(entry.get("id", ""), str(exc))
+                        processor.failures.mark_failed(entry.id, str(exc))
                     processor.failures.save()
 
                 scored_since_save += len(batch)
@@ -510,19 +506,13 @@ def run_guard(
 
             # Final flush for this file
             processor.save_generated(all_entries, score_map)
-            labeled_updated = processor.propagate_to_labeled(score_map)
 
             total_scored += len(score_map)
-            total_labeled_updated += labeled_updated
 
             status_parts = [f"[green]✓[/] {source_file.stem}"]
             if skipped:
                 status_parts.append(f"({skipped} already done)")
             status_parts.append(f"→ [bold]{len(score_map)}[/] scored")
-            if labeled_updated:
-                status_parts.append(
-                    f"| [cyan]{labeled_updated}[/] labeled entries updated"
-                )
             if processor.failures.failed_count:
                 status_parts.append(
                     f"| [red]{processor.failures.failed_count} failed[/]"
@@ -556,8 +546,9 @@ def show_plan(source_files: list[Path], guards: list[str]) -> None:
         row = [sf.stem, str(len(entries))]
         for guard in guards:
             pending = sum(
-                1 for e in entries
-                if guard not in e.get("metadata", {}).get("safety_scores", {})
+                1
+                for e in entries
+                if not any(run.guard_name == guard and run.generation_hash == e.generation_hash() for run in e.safety_runs)
             )
             row.append(str(pending))
         table.add_row(*row)
@@ -586,8 +577,8 @@ def main() -> None:
         "--files",
         default="*",
         help=(
-            "fnmatch pattern applied to file stems in data/1_generated/ "
-            "(default: '*' — all files)."
+            "fnmatch pattern applied to canonical dataset file stem "
+            "(default: '*' — data/dataset.jsonl)."
         ),
     )
     parser.add_argument(
@@ -610,15 +601,13 @@ def main() -> None:
     args = parser.parse_args()
 
     # Resolve source files
-    all_files = sorted(
-        f for f in GENERATED_DIR.glob("*.jsonl") if f.stem != ".gitkeep"
-    )
+    all_files = [DATASET_PATH] if DATASET_PATH.exists() else []
     if args.files != "*":
         all_files = [f for f in all_files if fnmatch.fnmatch(f.stem, args.files)]
 
     if not all_files:
         console.print(
-            f"[red]No .jsonl files found in {GENERATED_DIR} matching '{args.files}'.[/]"
+            f"[red]No canonical dataset found at {DATASET_PATH} matching '{args.files}'.[/]"
         )
         sys.exit(1)
 

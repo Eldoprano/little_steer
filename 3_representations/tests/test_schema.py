@@ -2,8 +2,13 @@
 Tests for little_steer.data.schema — AnnotatedSpan and ConversationEntry.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
-from thesis_schema import AnnotatedSpan, ConversationEntry
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "data"))
+from thesis_schema import AnnotatedSpan, ConversationEntry, LabelRun, SafetyRun
 
 
 # ── AnnotatedSpan ────────────────────────────────────────────────────────────
@@ -203,3 +208,69 @@ def test_json_roundtrip():
     assert len(restored.annotations) == 1
     assert restored.annotations[0].text == "I need to think"
     assert restored.annotations[0].score == 2.5
+
+
+def test_generation_hash_changes_with_reasoning():
+    entry_a = make_entry()
+    entry_b = make_entry(messages=[
+        {"role": "user", "content": "Can you help with X?"},
+        {"role": "reasoning", "content": "Different reasoning."},
+        {"role": "assistant", "content": "Sure, here is how to do X."},
+    ])
+    assert entry_a.generation_hash() != entry_b.generation_hash()
+
+
+def test_upsert_label_run_updates_active_fields():
+    entry = make_entry()
+    run = LabelRun(
+        judge_name="judge-v6",
+        judge_model_id="judge-model",
+        taxonomy_version="v6",
+        labeled_at="2026-04-21T00:00:00Z",
+        generation_hash=entry.generation_hash(),
+        assessment={"trajectory": "comply_no_deliberation", "turning_point": -1, "alignment": "ambiguous"},
+        sentence_annotations=[],
+        spans=[
+            AnnotatedSpan(
+                text="I need to think",
+                message_idx=1,
+                char_start=0,
+                char_end=15,
+                labels=["III_PLAN"],
+            )
+        ],
+    )
+    entry.upsert_label_run(run, activate=True)
+    assert entry.judge == "judge-v6"
+    assert entry.metadata["active_label_run"] == run.key
+    assert entry.annotations == run.spans
+
+
+def test_reset_after_regeneration_clears_derived_state():
+    entry = make_entry(
+        annotations=[
+            AnnotatedSpan(text="I need to think", message_idx=1, char_start=0, char_end=15, labels=["III_PLAN"])
+        ],
+        metadata={"active_label_run": "x", "assessment": {"trajectory": "a"}},
+        label_runs=[
+            LabelRun(judge_name="judge-v5", taxonomy_version="v5", generation_hash="abc")
+        ],
+        safety_runs=[
+            SafetyRun(guard_name="wildguard", generation_hash="abc")
+        ],
+        judge="judge-v5",
+    )
+    entry.reset_after_regeneration(
+        messages=[
+            {"role": "user", "content": "Hi"},
+            {"role": "reasoning", "content": "Fresh reasoning"},
+            {"role": "assistant", "content": "Fresh answer"},
+        ],
+        generation_metadata={"prompt_id": "p1", "generation_hash": "newhash"},
+    )
+    assert entry.annotations == []
+    assert entry.judge == ""
+    assert entry.label_runs == []
+    assert entry.safety_runs == []
+    assert entry.metadata["generation_hash"] == "newhash"
+    assert "active_label_run" not in entry.metadata

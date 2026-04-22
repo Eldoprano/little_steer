@@ -60,21 +60,38 @@ labelers:
     output:
       suffix: "_gpt-5.4-mini"
 
-  - enabled: false
+  - enabled: true
     judge:
       name: gpt-5.4-2026-03-05
       model_id: gpt-5.4-2026-03-05
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
+      reasoning_effort: none
     pipeline:
-      max_workers: 4
+      max_workers: 2
       max_retries: 2
-      retry_delay: 2.0
+      retry_delay: 5.0
       token_budget: 250000
       budget_state_file: "_artifacts/gpt5.4_token_budget.json"
     output:
       suffix: "_gpt-5.4-2026-03-05"
+
+  - enabled: false
+    judge:
+      name: gpt-5.1-2025-11-13
+      model_id: gpt-5.1-2025-11-13
+      backend: openai
+      api_key_source: openai-api-key
+      max_completion_tokens: 8192
+    pipeline:
+      max_workers: 2
+      max_retries: 1
+      retry_delay: 5.0
+      token_budget: 250000
+      budget_state_file: "_artifacts/gpt5.1_token_budget.json"
+    output:
+      suffix: "_gpt-5.1-2025-11-13"
 
   - enabled: false 
     judge:
@@ -116,6 +133,7 @@ labelers:
       rpm: 15
     pipeline:
       max_retries: 2
+      max_workers: 4
       retry_delay: 8.0
       request_state_file: "gemini-2.5-flash-lite_requests.json"
     output:
@@ -131,6 +149,7 @@ labelers:
       rpm: 10
     pipeline:
       max_retries: 2
+      max_workers: 4
       retry_delay: 10.0
       request_state_file: "gemini-3-flash-preview_requests.json"
     output:
@@ -145,6 +164,7 @@ labelers:
       rpm: 15
     pipeline:
       max_retries: 2
+      max_workers: 4
       retry_delay: 8.0
       request_state_file: "gemini-3.1-flash-lite-preview_requests.json"
     output:

@@ -63,6 +63,7 @@ function ReasoningTrace({
   const activeSentRef = useRef<HTMLSpanElement>(null);
   const reasoningIdx = entry.messages.findIndex((m) => m.role === 'reasoning');
   const reasoning = reasoningIdx >= 0 ? entry.messages[reasoningIdx].content : '';
+  const reasoningTruncated = Boolean(entry.metadata.reasoning_truncated);
 
   useEffect(() => {
     activeSentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -82,7 +83,10 @@ function ReasoningTrace({
     if (pos < s.char_start) {
       segs.push({ kind: 'plain', text: reasoning.slice(pos, s.char_start), key: `p${pos}` });
     }
-    segs.push({ kind: 'sentence', text: s.text, idx: s.index, key: `s${s.index}` });
+    // Use the actual substring from char positions to keep display aligned with offsets.
+    // s.text and reasoning.slice(char_start, char_end) should be identical for well-formed
+    // annotations, but using the slice avoids visual misalignment if they ever diverge.
+    segs.push({ kind: 'sentence', text: reasoning.slice(s.char_start, s.char_end), idx: s.index, key: `s${s.index}` });
     pos = s.char_end;
   }
   if (pos < reasoning.length) {
@@ -140,6 +144,11 @@ function ReasoningTrace({
           </span>
         );
       })}
+      {reasoningTruncated && (
+        <span style={{ display: 'block', marginTop: '10px', color: '#7A8478', fontStyle: 'italic', fontSize: '12px' }}>
+          [TRUNCATED: The AI labeler only saw the reasoning up to this point. The full trace is shown above for context.]
+        </span>
+      )}
     </div>
   );
 }
@@ -182,6 +191,16 @@ function UserMessage({ entry }: { entry: ConversationEntry }) {
   );
 }
 
+// ── Response truncation (mirrors Python format_prompt logic) ─────────────────
+
+const RESPONSE_SENTENCES = 10;
+
+function truncateToSentences(text: string, n: number): string {
+  if (!text.trim()) return text;
+  const parts = text.trim().split(/(?<=[.!?])\s+/);
+  return parts.slice(0, n).join(' ');
+}
+
 // ── Markdown styles (injected once) ──────────────────────────────────────────
 
 const MD_STYLES = `
@@ -218,6 +237,8 @@ const MD_STYLES = `
 function AssistantMessage({ entry }: { entry: ConversationEntry }) {
   const assistantMsg = entry.messages.find((m) => m.role === 'assistant');
   if (!assistantMsg) return null;
+  const truncated = truncateToSentences(assistantMsg.content, RESPONSE_SENTENCES);
+  const wasTruncated = Boolean(assistantMsg.content.trim()) && truncated.length < assistantMsg.content.trim().length;
   return (
     <>
       <style>{MD_STYLES}</style>
@@ -233,7 +254,12 @@ function AssistantMessage({ entry }: { entry: ConversationEntry }) {
           lineHeight: '1.6',
         }}
       >
-        <ReactMarkdown>{assistantMsg.content}</ReactMarkdown>
+        <ReactMarkdown>{truncated}</ReactMarkdown>
+        {wasTruncated && (
+          <div style={{ color: '#7A8478', fontSize: '11px', marginTop: '4px', fontStyle: 'italic' }}>
+            [TRUNCATED: Only the first {RESPONSE_SENTENCES} sentence(s) shown]
+          </div>
+        )}
       </div>
     </>
   );

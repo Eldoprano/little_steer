@@ -20,6 +20,7 @@ Span positions use message_idx to identify the target message:
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -87,6 +88,44 @@ class AnnotatedSpan(BaseModel):
         )
 
 
+class LabelRun(BaseModel):
+    """One labeling pass over the current generated content."""
+
+    judge_name: str
+    judge_model_id: str = ""
+    taxonomy_version: str = ""
+    labeled_at: str = ""
+    generation_hash: str = ""
+    reasoning_truncated: bool = False
+    assessment: dict[str, Any] = Field(default_factory=dict)
+    sentence_annotations: list[dict[str, Any]] = Field(default_factory=list)
+    spans: list[AnnotatedSpan] = Field(default_factory=list)
+    usage: dict[str, Any] = Field(default_factory=dict)
+    finish_reason: str = ""
+    status: str = "completed"
+    error: str | None = None
+
+    @property
+    def key(self) -> str:
+        return label_run_key(self.judge_name, self.taxonomy_version, self.generation_hash)
+
+
+class SafetyRun(BaseModel):
+    """One safety-scoring pass over the current generated content."""
+
+    guard_name: str
+    guard_model_id: str = ""
+    scored_at: str = ""
+    generation_hash: str = ""
+    result: dict[str, Any] = Field(default_factory=dict)
+    status: str = "completed"
+    error: str | None = None
+
+    @property
+    def key(self) -> str:
+        return safety_run_key(self.guard_name, self.generation_hash)
+
+
 class ConversationEntry(BaseModel):
     """A single conversation with all its annotations.
 
@@ -115,7 +154,7 @@ class ConversationEntry(BaseModel):
     model: str
     """Name/ID of the model that generated the response."""
 
-    judge: str
+    judge: str = ""
     """Name/ID of the model that performed the labeling."""
 
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -123,6 +162,12 @@ class ConversationEntry(BaseModel):
     Extensible metadata: prompt_type, dataset_source, split, task_id,
     safety_decision_category, reasoning_usage_score, etc.
     """
+
+    label_runs: list[LabelRun] = Field(default_factory=list)
+    """All labeler outputs kept for this generated sample."""
+
+    safety_runs: list[SafetyRun] = Field(default_factory=list)
+    """All safety-scoring outputs kept for this generated sample."""
 
     @field_validator("messages")
     @classmethod
@@ -178,6 +223,66 @@ class ConversationEntry(BaseModel):
                 return msg["content"]
         return None
 
+    def generation_hash(self) -> str:
+        """Stable 16-char hash of the current reasoning content."""
+        reasoning = self.get_reasoning_content() or ""
+        return hashlib.md5(reasoning.encode("utf-8")).hexdigest()[:16]
+
+    def active_label_run(self) -> LabelRun | None:
+        """Return the currently-selected canonical label run, if any."""
+        key = self.metadata.get("active_label_run")
+        if key:
+            for run in self.label_runs:
+                if run.key == key:
+                    return run
+        if self.label_runs:
+            return self.label_runs[-1]
+        return None
+
+    def set_active_label_run(self, run: LabelRun) -> None:
+        """Mirror an active run onto legacy top-level fields."""
+        self.metadata["active_label_run"] = run.key
+        self.metadata["assessment"] = dict(run.assessment)
+        self.metadata["labeled_at"] = run.labeled_at
+        self.metadata["taxonomy_version"] = run.taxonomy_version
+        if run.reasoning_truncated:
+            self.metadata["reasoning_truncated"] = True
+        else:
+            self.metadata.pop("reasoning_truncated", None)
+        self.annotations = list(run.spans)
+        self.judge = run.judge_name
+
+    def upsert_label_run(self, run: LabelRun, activate: bool = True) -> None:
+        """Insert or replace a label run by canonical run key."""
+        self.label_runs = [existing for existing in self.label_runs if existing.key != run.key]
+        self.label_runs.append(run)
+        if activate:
+            self.set_active_label_run(run)
+
+    def upsert_safety_run(self, run: SafetyRun) -> None:
+        """Insert or replace a safety run by canonical run key."""
+        self.safety_runs = [existing for existing in self.safety_runs if existing.key != run.key]
+        self.safety_runs.append(run)
+
+    def reset_after_regeneration(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        generation_metadata: dict[str, Any],
+    ) -> None:
+        """Replace generated content and clear all derived downstream state."""
+        self.messages = messages
+        self.annotations = []
+        self.judge = ""
+        self.label_runs = []
+        self.safety_runs = []
+        self.metadata = dict(generation_metadata)
+        self.metadata.pop("active_label_run", None)
+        self.metadata.pop("assessment", None)
+        self.metadata.pop("labeled_at", None)
+        self.metadata.pop("taxonomy_version", None)
+        self.metadata.pop("reasoning_truncated", None)
+
     def get_annotations_for_message(self, message_idx: int) -> list[AnnotatedSpan]:
         """Return annotations targeting a specific message."""
         return [a for a in self.annotations if a.message_idx == message_idx]
@@ -197,3 +302,13 @@ class ConversationEntry(BaseModel):
 
     def __repr__(self) -> str:
         return self.summary()
+
+
+def label_run_key(judge_name: str, taxonomy_version: str, generation_hash: str) -> str:
+    """Canonical identifier for one label run."""
+    return f"{judge_name}::{taxonomy_version}::{generation_hash}"
+
+
+def safety_run_key(guard_name: str, generation_hash: str) -> str:
+    """Canonical identifier for one safety run."""
+    return f"{guard_name}::{generation_hash}"

@@ -190,8 +190,6 @@ def run_multi_judge(
 ) -> None:
     """Run the full labeling pipeline for each judge sequentially."""
     base_output_dir = cfg.resolve_path(config_path, cfg.output.dir)
-    multi = len(active_judges) > 1
-
     all_results: list[tuple[str, list[tuple[str, int, int, int, int]]]] = []
 
     for judge_idx, judge in enumerate(active_judges):
@@ -210,9 +208,6 @@ def run_multi_judge(
             )
             input()
 
-        # In multi-judge mode, put each judge in its own sub-dir
-        out_dir_override = (base_output_dir / judge.name) if multi else None
-
         run_pipeline(
             input_files=input_files,
             config=cfg,
@@ -221,7 +216,6 @@ def run_multi_judge(
             reset_checkpoints=reset_checkpoints,
             dry_run=dry_run,
             judge_cfg=judge,
-            output_dir_override=out_dir_override,
         )
         console.print()
 

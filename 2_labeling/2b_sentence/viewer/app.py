@@ -60,9 +60,9 @@ def entry_detail(entry_id: str, reasoning_hash: str):
     if not versions:
         abort(404)
 
-    requested_source = request.args.get("source")
-    if requested_source:
-        entry = next((v for v in versions if v["source_file"] == requested_source), versions[0])
+    requested_run_key = request.args.get("run_key")
+    if requested_run_key:
+        entry = next((v for v in versions if v.get("run_key") == requested_run_key), versions[0])
     else:
         entry = versions[0]
 
@@ -135,11 +135,18 @@ def entry_detail(entry_id: str, reasoning_hash: str):
 @app.route("/stats")
 def stats():
     entries = _load()
+    exclude_safe = request.args.get("exclude_safe", "0") == "1"
+    if exclude_safe:
+        entries = [
+            e for e in entries
+            if (e.get("metadata") or {}).get("prompt_safety", "").lower() != "safe"
+        ]
     s = compute_stats(entries)
     return render_template(
         "stats.html",
         stats=s,
         label_groups=LABEL_GROUPS,
+        exclude_safe=exclude_safe,
     )
 
 
@@ -171,6 +178,7 @@ def api_entry_compare(entry_id: str, reasoning_hash: str):
         avg_score = round(sum(scores) / len(scores), 1) if scores else 0.0
         result.append({
             "source_file": entry.get("source_file", ""),
+            "run_key": entry.get("run_key", ""),
             "dataset_name": entry.get("_dataset_name", entry.get("source_file", "")),
             "judge": entry.get("judge", ""),
             "model": entry.get("model", ""),
