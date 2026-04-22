@@ -100,3 +100,12 @@ notes/
 .stignore
 .stfolder/
 1_generating/debug_config.yaml
+2_labeling/2b_sentence/viewer/templates/index.html
+2_labeling/2b_sentence/_artifacts/
+
+# Canonical dataset (large runtime file — committed separately or stored outside git)
+data/dataset.jsonl
+data/dataset.parquet
+
+# Migration artifacts
+data/dataset_migration_report.json
