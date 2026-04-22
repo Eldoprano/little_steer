@@ -183,7 +183,7 @@ class JudgeConfig(BaseModel):
     max_tokens: int | None = 8192
     max_completion_tokens: int | None = None
     timeout: int = 120
-    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
     service_tier: Literal["auto", "default", "flex"] | None = None
     # When True, run.py will pause before this judge and ask the user to
     # load the model in LMStudio before continuing.

@@ -61,6 +61,34 @@
       <span class="stat-pill-value">{{ metadata.labeled_at[:10] }}</span>
     </div>
     {% endif %}
+    {% set ss = metadata.get('safety_scores') or {} %}
+    {% set wg = ss.get('wildguard') or {} %}
+    {% set q3 = ss.get('qwen3guard') or {} %}
+    {% if wg or q3 %}
+    <div class="guard-pills">
+      {% if wg %}
+      <span class="guard-pill-header">WG</span>
+      <span class="guard-pill guard-pill-{{ wg.get('prompt_harmfulness') or 'none' }}" title="WildGuard prompt harmfulness">
+        P: {{ wg.get('prompt_harmfulness') or '—' }}
+      </span>
+      <span class="guard-pill guard-pill-{{ wg.get('response_harmfulness') or 'none' }}" title="WildGuard response harmfulness">
+        R: {{ wg.get('response_harmfulness') or '—' }}
+      </span>
+      <span class="guard-pill guard-pill-refusal-{{ wg.get('response_refusal') or 'none' }}" title="WildGuard response refusal">
+        {{ wg.get('response_refusal') or '—' }}
+      </span>
+      {% endif %}
+      {% if q3 %}
+      <span class="guard-pill-header">Q3</span>
+      <span class="guard-pill guard-pill-{{ (q3.get('prompt_safety') or 'none')|lower }}" title="Qwen3Guard prompt safety{% if q3.get('prompt_categories') %}: {{ q3.prompt_categories | join(', ') }}{% endif %}">
+        P: {{ q3.get('prompt_safety', '—') }}{% if q3.get('prompt_categories') %} ({{ q3.prompt_categories | join(', ') }}){% endif %}
+      </span>
+      <span class="guard-pill guard-pill-{{ (q3.get('response_safety') or 'none')|lower }}" title="Qwen3Guard response safety{% if q3.get('response_categories') %}: {{ q3.response_categories | join(', ') }}{% endif %}">
+        R: {{ q3.get('response_safety', '—') }}{% if q3.get('response_categories') %} ({{ q3.response_categories | join(', ') }}){% endif %}
+      </span>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -121,10 +149,10 @@
 <div class="compare-panel" id="compare-panel">
   <div style="display: flex; align-items: center; gap: 0.5rem; margin-right: 1.5rem; padding-right: 1.5rem; border-right: 1px solid var(--bg-3);">
     <span class="compare-label">Main View:</span>
-    <select onchange="window.location.href='?source=' + this.value" style="padding: 0.2rem 0.5rem; border-radius: 5px; border: 1px solid var(--bg-3); background: var(--bg-2); color: var(--fg); font-size: 0.82rem; outline: none; cursor: pointer; max-width: 250px;">
+    <select onchange="window.location.href='?run_key=' + encodeURIComponent(this.value)" style="padding: 0.2rem 0.5rem; border-radius: 5px; border: 1px solid var(--bg-3); background: var(--bg-2); color: var(--fg); font-size: 0.82rem; outline: none; cursor: pointer; max-width: 250px;">
       {% for v in versions %}
-        <option value="{{ v.source_file }}" {% if v.source_file == entry.source_file %}selected{% endif %}>
-          {{ v.judge or v.source_file }}
+        <option value="{{ v.run_key }}" {% if v.run_key == entry.run_key %}selected{% endif %}>
+          {{ v.judge or v.run_key }}
         </option>
       {% endfor %}
     </select>
@@ -184,7 +212,7 @@ const USED_GROUPS  = {{ used_groups | tojson }};
 const USED_LABELS  = {{ used_labels | tojson }};
 const ENTRY_ID     = {{ entry.id | tojson }};
 const REASONING_HASH = {{ reasoning_hash | tojson }};
-const ENTRY_SOURCE = {{ entry.source_file | tojson }};
+const ENTRY_RUN_KEY = {{ entry.run_key | tojson }};
 
 // Build label → group lookup from GROUP_META
 const LABEL_TO_GROUP = {};
@@ -415,7 +443,7 @@ function setupSyncScroll() {
 
 // ── Comparison mode ───────────────────────────────────────────
 let compareVersions = [];   // all available versions from server
-let openSources = new Set(); // source_files currently open in compare grid
+let openRunKeys = new Set(); // run keys currently open in compare grid
 
 async function loadCompareVersions() {
   const loading = document.getElementById('compare-loading');
@@ -442,17 +470,17 @@ function shortModel(m) {
 
 function renderCompareChips() {
   const container = document.getElementById('compare-chips');
-  const others = compareVersions.filter(v => v.source_file !== ENTRY_SOURCE);
+  const others = compareVersions.filter(v => v.run_key !== ENTRY_RUN_KEY);
   if (others.length === 0) {
     container.innerHTML = '<span class="dim" style="font-size:0.82rem">No other labelers for this entry</span>';
     return;
   }
   container.innerHTML = others.map(v => {
-    const label = v.judge || v.source_file;
-    const isOpen = openSources.has(v.source_file);
+    const label = v.judge || v.run_key;
+    const isOpen = openRunKeys.has(v.run_key);
     return `<button class="compare-chip ${isOpen ? 'compare-chip--open' : ''}"
-                    data-source="${escHtml(v.source_file)}"
-                    onclick="toggleComparePane('${escHtml(v.source_file)}')"
+                    data-run-key="${escHtml(v.run_key)}"
+                    onclick="toggleComparePane('${escHtml(v.run_key)}')"
                     title="Labeler: ${escHtml(v.judge)}&#10;Dataset: ${escHtml(v.dataset_name)}">
               ${escHtml(shortModel(label))}
               <span class="compare-chip-count">${v.n_annotations}</span>
@@ -460,11 +488,11 @@ function renderCompareChips() {
   }).join('');
 }
 
-function toggleComparePane(sourceFile) {
-  if (openSources.has(sourceFile)) {
-    openSources.delete(sourceFile);
+function toggleComparePane(runKey) {
+  if (openRunKeys.has(runKey)) {
+    openRunKeys.delete(runKey);
   } else {
-    openSources.add(sourceFile);
+    openRunKeys.add(runKey);
   }
   rebuildCompareGrid();
   renderCompareChips();
@@ -474,7 +502,7 @@ function rebuildCompareGrid() {
   const grid = document.getElementById('compare-grid');
   const mainConv = document.getElementById('main-conversation');
 
-  if (openSources.size === 0) {
+  if (openRunKeys.size === 0) {
     grid.innerHTML = '';
     grid.style.display = 'none';
     grid.style.height = '';
@@ -498,28 +526,28 @@ function rebuildCompareGrid() {
   });
 
   // Determine grid columns: add 1 for the "current" entry
-  const totalPanes = openSources.size + 1;
+  const totalPanes = openRunKeys.size + 1;
   const cols = Math.ceil(Math.sqrt(totalPanes * (window.innerWidth / window.innerHeight)));
   const gridCols = Math.max(1, Math.min(cols, totalPanes));
   grid.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
 
   // Build panes: current entry first, then open versions
-  const allPanes = [ENTRY_SOURCE, ...openSources];
-  grid.innerHTML = allPanes.map(sourceFile => {
-    const version = compareVersions.find(v => v.source_file === sourceFile);
+  const allPanes = [ENTRY_RUN_KEY, ...openRunKeys];
+  grid.innerHTML = allPanes.map(runKey => {
+    const version = compareVersions.find(v => v.run_key === runKey);
     if (!version) return '';
-    const labelName = version.judge || version.source_file;
-    const isCurrent = sourceFile === ENTRY_SOURCE;
+    const labelName = version.judge || version.run_key;
+    const isCurrent = runKey === ENTRY_RUN_KEY;
     const sign = version.avg_score >= 0 ? '+' : '';
     return `<div class="compare-pane">
       <div class="compare-pane-header">
         <span class="badge badge-judge" title="${escHtml(version.judge)}">${escHtml(shortModel(labelName))}</span>
         ${isCurrent ? '<span class="compare-current-tag">current</span>' : ''}
         <span class="dim" style="font-size:0.75rem">${version.n_annotations} sentences · <span style="font-weight:600;color:${version.avg_score >= 0 ? 'var(--green)' : 'var(--red)'}">${sign}${version.avg_score.toFixed(1)}</span></span>
-        ${!isCurrent ? `<button class="compare-close" onclick="toggleComparePane('${escHtml(sourceFile)}')" title="Close">✕</button>` : ''}
+        ${!isCurrent ? `<button class="compare-close" onclick="toggleComparePane('${escHtml(runKey)}')" title="Close">✕</button>` : ''}
       </div>
       <div class="compare-reasoning sync-scroll turn-body turn-body--thinking"
-           data-source="${escHtml(sourceFile)}">
+           data-source="${escHtml(version.source_file)}">
         ${version.reasoning_html || '<span class="dim">No reasoning</span>'}
       </div>
     </div>`;
@@ -547,4 +575,44 @@ applyVisualization();
 loadCompareVersions();
 setupSyncScroll();
 </script>
+
+<style>
+.guard-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+.guard-pill-header {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--fg-dim);
+  padding: 1px 4px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.guard-pills .guard-pill-header:first-child { margin-left: 0; }
+.guard-pill {
+  font-size: 0.70rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.guard-pill-harmful   { background: #e67e8022; border-color: #e67e80; color: #e67e80; }
+.guard-pill-unharmful { background: #a7c08022; border-color: #a7c080; color: #a7c080; }
+.guard-pill-unsafe    { background: #e67e8022; border-color: #e67e80; color: #e67e80; }
+.guard-pill-safe      { background: #a7c08022; border-color: #a7c080; color: #a7c080; }
+.guard-pill-controversial { background: #dbbc7f22; border-color: #dbbc7f; color: #dbbc7f; }
+.guard-pill-none      { background: var(--bg-3); border-color: var(--bg-3); color: var(--fg-dim); }
+.guard-pill-refusal-refusal   { background: #a7c08022; border-color: #a7c080; color: #a7c080; }
+.guard-pill-refusal-compliance { background: #e67e8022; border-color: #e67e80; color: #e67e80; }
+.guard-pill-refusal-none { background: var(--bg-3); border-color: var(--bg-3); color: var(--fg-dim); }
+</style>
 {% endblock %}

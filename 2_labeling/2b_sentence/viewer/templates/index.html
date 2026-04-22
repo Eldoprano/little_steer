@@ -13,7 +13,7 @@
     <select id="f-dataset" onchange="applyFilters()">
       <option value="">All datasets</option>
       {% for ds in filters.datasets %}
-      <option value="{{ ds }}">{{ filters.dataset_names.get(ds, ds) }}</option>
+      <option value="{{ ds }}">{{ ds }}</option>
       {% endfor %}
     </select>
 
@@ -43,6 +43,26 @@
       {% for a in filters.alignments %}
       <option value="{{ a }}">{{ a }}</option>
       {% endfor %}
+    </select>
+
+    <select id="f-guard" onchange="applyFilters()">
+      <option value="">All guard assessments</option>
+      <optgroup label="WildGuard">
+        <option value="wg_prompt_harmful">WG: Prompt harmful</option>
+        <option value="wg_prompt_unharmful">WG: Prompt unharmful</option>
+        <option value="wg_resp_harmful">WG: Response harmful</option>
+        <option value="wg_resp_unharmful">WG: Response unharmful</option>
+        <option value="wg_refusal">WG: Response refusal</option>
+        <option value="wg_compliance">WG: Response compliance</option>
+      </optgroup>
+      <optgroup label="Qwen3Guard">
+        <option value="q3_prompt_unsafe">Q3: Prompt unsafe</option>
+        <option value="q3_prompt_safe">Q3: Prompt safe</option>
+        <option value="q3_prompt_controversial">Q3: Prompt controversial</option>
+        <option value="q3_resp_unsafe">Q3: Response unsafe</option>
+        <option value="q3_resp_safe">Q3: Response safe</option>
+        <option value="q3_resp_controversial">Q3: Response controversial</option>
+      </optgroup>
     </select>
 
     <input type="text" id="f-search" placeholder="Search prompt…"
@@ -228,20 +248,37 @@ function renderRow(e) {
   </tr>`;
 }
 
+const GUARD_FILTER_MAP = {
+  wg_prompt_harmful:      e => e.wg_prompt_harm === "harmful",
+  wg_prompt_unharmful:    e => e.wg_prompt_harm === "unharmful",
+  wg_resp_harmful:        e => e.wg_resp_harm   === "harmful",
+  wg_resp_unharmful:      e => e.wg_resp_harm   === "unharmful",
+  wg_refusal:             e => e.wg_resp_refusal === "refusal",
+  wg_compliance:          e => e.wg_resp_refusal === "compliance",
+  q3_prompt_unsafe:       e => (e.q3_prompt_safety || "").toLowerCase() === "unsafe",
+  q3_prompt_safe:         e => (e.q3_prompt_safety || "").toLowerCase() === "safe",
+  q3_prompt_controversial:e => (e.q3_prompt_safety || "").toLowerCase() === "controversial",
+  q3_resp_unsafe:         e => (e.q3_resp_safety || "").toLowerCase() === "unsafe",
+  q3_resp_safe:           e => (e.q3_resp_safety || "").toLowerCase() === "safe",
+  q3_resp_controversial:  e => (e.q3_resp_safety || "").toLowerCase() === "controversial",
+};
+
 function applyFilters() {
-  const ds   = document.getElementById("f-dataset").value;
-  const mod  = document.getElementById("f-model").value;
-  const jdg  = document.getElementById("f-judge").value;
-  const traj = document.getElementById("f-trajectory").value;
-  const aln  = document.getElementById("f-alignment").value;
-  const q    = document.getElementById("f-search").value.toLowerCase();
+  const ds    = document.getElementById("f-dataset").value;
+  const mod   = document.getElementById("f-model").value;
+  const jdg   = document.getElementById("f-judge").value;
+  const traj  = document.getElementById("f-trajectory").value;
+  const aln   = document.getElementById("f-alignment").value;
+  const guard = document.getElementById("f-guard").value;
+  const q     = document.getElementById("f-search").value.toLowerCase();
 
   let filtered = ALL.filter(e => {
-    if (ds   && !(e.source_files || []).includes(ds)) return false;
+    if (ds   && !(e.dataset_names || []).includes(ds)) return false;
     if (mod  && e.model !== mod)          return false;
     if (jdg  && !(e.judges || []).includes(jdg)) return false;
     if (traj && e.trajectory !== traj)    return false;
     if (aln  && e.alignment !== aln)      return false;
+    if (guard && GUARD_FILTER_MAP[guard] && !GUARD_FILTER_MAP[guard](e)) return false;
     if (q    && !e.user_prompt.toLowerCase().includes(q)) return false;
     if (activeBehaviours !== null) {
       const entryLabels = new Set(e.label_ids || []);
@@ -266,7 +303,7 @@ function applyFilters() {
 }
 
 function clearFilters() {
-  ["f-dataset","f-model","f-judge","f-trajectory","f-alignment"].forEach(id =>
+  ["f-dataset","f-model","f-judge","f-trajectory","f-alignment","f-guard"].forEach(id =>
     document.getElementById(id).value = "");
   document.getElementById("f-search").value = "";
   activeBehaviours = null;
