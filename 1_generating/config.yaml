@@ -15,8 +15,8 @@ defaults:
   top_p: 0.95
   top_k: null          # null = disabled
   min_p: null          # null = disabled
-  max_new_tokens: 3000
-  quantization: "8bit" # null = float16 as-is
+  max_new_tokens: 10000
+  quantization: "4bit" # null = float16 as-is
                        # "4bit" or "8bit" = bitsandbytes quantization
                        # "auto" = try float16, fall back to bitsandbytes if OOM
                        # For pre-quantized HF models (AWQ/GPTQ): keep null,
@@ -37,16 +37,19 @@ models:
     model_id: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
     temperature: 1
 
-  # - name: phi-4-reasoning-14B
-  #   model_id: unsloth/Phi-4-reasoning-GGUF:Q4_K_M
-  #   tokenizer: microsoft/Phi-4-reasoning
-  #   hf_config_path: microsoft/Phi-4-reasoning
-  #   quantization: none
-  #   temperature: 0.8
-  #   top_p: 0.95
+  - name: phi-4-reasoning-14B-Q4_K_M
+    model_id: unsloth/Phi-4-reasoning-GGUF:Q4_K_M
+    tokenizer: microsoft/Phi-4-reasoning
+    hf_config_path: microsoft/Phi-4-reasoning
+    quantization: none
+    temperature: 0.8
+    top_p: 0.95
+    top_k: 50
+    repetition_penalty: 1.2
+    system_prompt: "You are Phi, a language model trained by Microsoft to help users. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> {Thought section} </think> {Solution section}. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion."
 
   - name: ministral-3-8B-Reasoning-2512
-    model_id: ministral-3-8b-instruct-2512
+    model_id: ministral-3-8b-reasoning-2512
     temperature: 1
     mistral_format: true
     think_prefix: true
@@ -63,25 +66,25 @@ models:
       [/THINK]
       Here, provide a self-contained response.
 
-  # - name: ministral-3-8B-Reasoning-2512-self-heretic
-  #   model_id: ministral-3-8b-reasoning-2512-heretic_gguf
-  #   tokenizer: mistralai/Ministral-3-8B-Reasoning-2512
-  #   temperature: 1
-  #   skip_datasets: [lima]
-  #   mistral_format: true
-  #   think_prefix: true
-  #   backend: openai
-  #   openai_base_url: http://localhost:1234/v1
-  #   openai_api_key: lm-studio
-  #   system_prompt: |
-  #     # HOW YOU SHOULD THINK AND ANSWER
-  #     First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
+  - name: ministral-3-8B-Reasoning-2512-self-heretic
+    model_id: ministral-3-8b-reasoning-2512-heretic_gguf
+    tokenizer: mistralai/Ministral-3-8B-Reasoning-2512
+    temperature: 0.7
+    skip_datasets: [lima]
+    mistral_format: true
+    think_prefix: true
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    system_prompt: |
+      # HOW YOU SHOULD THINK AND ANSWER
+      First draft your thinking process (inner monologue) until you arrive at a response. Format your response using Markdown, and use LaTeX for any mathematical equations. Write both your thoughts and the response in the same language as the input.
 
-  #     Your thinking process must follow the template below:
-  #     [THINK]
-  #     Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
-  #     [/THINK]
-  #     Here, provide a self-contained response.
+      Your thinking process must follow the template below:
+      [THINK]
+      Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate the response to the user.
+      [/THINK]
+      Here, provide a self-contained response.
 
   - name: gpt-oss-20b
     model_id: gpt-oss-20b
@@ -90,45 +93,45 @@ models:
     openai_api_key: lm-studio
     temperature: 1
 
-  # - name: gpt-oss-20b-heretic-ara-v3-i1
-  #   model_id: gpt-oss-20b-heretic-ara-v3-i1
-  #   backend: openai
-  #   openai_base_url: http://localhost:1234/v1
-  #   openai_api_key: lm-studio
-  #   temperature: 1
+  - name: gpt-oss-20b-heretic-ara-v3-i1
+    model_id: gpt-oss-20b-heretic-ara-v3-i1
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
 
-  # - name: gemma-4-26b-a4b
-  #   model_id: google/gemma-4-26b-a4b
-  #   backend: openai
-  #   openai_base_url: http://localhost:1234/v1
-  #   openai_api_key: lm-studio
-  #   temperature: 1
-  #   top_p: 0.95
-  #   top_k: 64
+  - name: gemma-4-26b-a4b
+    model_id: google/gemma-4-26b-a4b
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+    top_p: 0.95
+    top_k: 64
 
-  # - name: gemma-4-26b-a4b-heretic
-  #   model_id: nohurry/gemma-4-26B-A4B-it-heretic-GGUF:Q4_K_M
-  #   backend: openai
-  #   openai_base_url: http://localhost:1234/v1
-  #   openai_api_key: lm-studio
-  #   temperature: 1
-  #   top_p: 0.95
-  #   top_k: 64
-  #   skip_datasets: [lima]
+  - name: gemma-4-26b-a4b-heretic
+    model_id: nohurry/gemma-4-26B-A4B-it-heretic-GGUF:Q4_K_M
+    backend: openai
+    openai_base_url: http://localhost:1234/v1
+    openai_api_key: lm-studio
+    temperature: 1
+    top_p: 0.95
+    top_k: 64
+    skip_datasets: [lima]
     
 
-  - name: qwen3.5-9B
-    model_id: Qwen/Qwen3.5-9B
-    temperature: 1.0
-    top_p: 0.95
-    top_k: 20
-    min_p: 0.0
-    presence_penalty: 1.5
-    repetition_penalty: 1.0
+  # - name: qwen3.5-9B
+  #   model_id: Qwen/Qwen3.5-9B
+  #   temperature: 1.0
+  #   top_p: 0.95
+  #   top_k: 20
+  #   min_p: 0.0
+  #   presence_penalty: 1.5
+  #   repetition_penalty: 1.0
 
   - name: ministral-3-8B-Reasoning-2512
-    model_id: mistralai/Ministral-3-8B-Reasoning-2512
-    temperature: 1
+    model_id: ministral-3-8b-reasoning-2512
+    temperature: 0.7
     mistral_format: true
     think_prefix: true
     system_prompt: |
@@ -143,18 +146,18 @@ models:
 
 # ####### UNCENSORED ########
 
-  - name: deepseek-r1-distill-llama-8b-self-heretic
-    model_id: AISafety-Student/DeepSeek-R1-Distill-Llama-8B-heretic
-    tokenizer: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
-    temperature: 1
-    skip_datasets: [lima]
+  # - name: deepseek-r1-distill-llama-8b-self-heretic
+  #   model_id: AISafety-Student/DeepSeek-R1-Distill-Llama-8B-heretic
+  #   tokenizer: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+  #   temperature: 1
+  #   skip_datasets: [lima]
 
 
-  - name: gpt-oss-20b-heretic-ara-v3
-    model_id: p-e-w/gpt-oss-20b-heretic-ara-v3
-    tokenizer: openai/gpt-oss-20b
-    skip_datasets: [lima]
-    temperature: 1
+  # - name: gpt-oss-20b-heretic-ara-v3
+  #   model_id: p-e-w/gpt-oss-20b-heretic-ara-v3
+  #   tokenizer: openai/gpt-oss-20b
+  #   skip_datasets: [lima]
+  #   temperature: 1
 
   - name: qwen3.5-9B-heretic-v2
     model_id: trohrbaugh/Qwen3.5-9B-heretic-v2

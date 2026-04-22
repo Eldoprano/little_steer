@@ -25,7 +25,6 @@ import logging
 import os
 import re
 import signal
-import socket
 import sys
 import time
 import uuid
@@ -455,6 +454,20 @@ def make_prompt_id(dataset_name: str, prompt: str) -> str:
     return hashlib.md5(f"{dataset_name}::{prompt}".encode()).hexdigest()[:16]
 
 
+def make_entry_id(dataset_name: str, prompt: str, model_id: str) -> str:
+    """Stable 16-char MD5 for one generated sample."""
+    return hashlib.md5(f"{dataset_name}::{prompt}::{model_id}".encode()).hexdigest()[:16]
+
+
+def make_generation_hash(reasoning: str | None) -> str:
+    """Stable 16-char MD5 of the generated reasoning content.
+
+    Changes whenever the reasoning text changes (e.g. after regeneration).
+    Empty string if no reasoning was produced.
+    """
+    return hashlib.md5((reasoning or "").encode("utf-8")).hexdigest()[:16]
+
+
 def _make_messages(prompt: str, model_cfg: ResolvedModelConfig) -> list[dict]:
     msgs: list[dict] = []
     if model_cfg.system_prompt:
@@ -689,26 +702,32 @@ def generate_batch(
 # JSONL I/O
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_existing_ids(output_path: Path) -> set[str]:
-    if not output_path.exists():
-        return set()
-    ids: set[str] = set()
-    with open(output_path) as f:
+def load_dataset_store(dataset_path: Path) -> dict[str, ConversationEntry]:
+    """Load the canonical dataset file into an ID-keyed store."""
+    store: dict[str, ConversationEntry] = {}
+    if not dataset_path.exists():
+        return store
+    with open(dataset_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                ids.add(json.loads(line)["id"])
-            except (json.JSONDecodeError, KeyError):
-                pass
-    return ids
+                entry = ConversationEntry.model_validate_json(line)
+            except Exception:
+                continue
+            store[entry.id] = entry
+    return store
 
 
-def append_entry(entry: ConversationEntry, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "a", encoding="utf-8") as f:
-        f.write(entry.model_dump_json() + "\n")
+def write_dataset_store(dataset_path: Path, store: dict[str, ConversationEntry]) -> None:
+    """Atomically rewrite the canonical dataset file."""
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dataset_path.with_suffix(".jsonl.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for entry_id in sorted(store):
+            f.write(store[entry_id].model_dump_json() + "\n")
+    tmp.replace(dataset_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -755,8 +774,10 @@ class ResponseGenerator:
             (config_path.parent / config.output_dir).resolve()
             if config_path is not None else Path(config.output_dir)
         )
+        self._dataset_path = self._output_dir / "dataset.jsonl"
         self._hf_token = self._load_hf_token()
         self._prompt_cache: dict[str, list[tuple[str, dict]]] = {}
+        self._dataset_store = load_dataset_store(self._dataset_path)
 
     @classmethod
     def from_config(cls, path: str | Path) -> ResponseGenerator:
@@ -807,7 +828,6 @@ class ResponseGenerator:
     def run(self, models: list[str] | None = None,
             datasets: list[str] | None = None) -> None:
         run_id = str(uuid.uuid4())
-        machine_id = socket.gethostname()
 
         model_cfgs = [m.resolve(self.config.defaults) for m in self.config.models
                       if models is None or m.name in models]
@@ -822,12 +842,11 @@ class ResponseGenerator:
             return
 
         _console.print(f"\nRun ID     : {run_id}")
-        _console.print(f"Machine    : {machine_id}")
         _console.print(f"Models     : {[m.name for m in model_cfgs]}")
         _console.print(f"Datasets   : {[d.name for d in dataset_cfgs]}")
         _console.print(f"Mode       : {self.config.generation.run_mode}")
         _console.print(f"Chunk size : {self.config.generation.write_chunk_size}")
-        _console.print(f"Output     : {self._output_dir}\n")
+        _console.print(f"Output     : {self._dataset_path}\n")
 
         failed: list[str] = []
         for model_cfg in model_cfgs:
@@ -839,7 +858,7 @@ class ResponseGenerator:
                 continue
 
             try:
-                self._run_for_model(model_cfg, active, run_id, machine_id)
+                self._run_for_model(model_cfg, active, run_id)
             except Exception as e:
                 from rich.markup import escape
                 _console.print(f"\n[red][SKIP] {model_cfg.name} failed: "
@@ -854,8 +873,8 @@ class ResponseGenerator:
             _console.print(f"\n[red]Skipped: {failed}[/red]")
 
         status = "STOPPED" if _shutdown_requested else ("PARTIAL" if failed else "SUCCESS")
-        title = f"GPU Free — Response Generation Finished ({machine_id})"
-        msg = (f"Status: {status}\nMachine: {machine_id}\n"
+        title = "GPU Free — Response Generation Finished"
+        msg = (f"Status: {status}\n"
                f"Models: {', '.join(m.name for m in model_cfgs)}\n"
                f"Datasets: {', '.join(d.name for d in dataset_cfgs)}")
         if failed:
@@ -867,10 +886,9 @@ class ResponseGenerator:
     def _has_work(self, model_cfg: ResolvedModelConfig,
                   dataset_cfgs: list[DatasetConfig]) -> bool:
         for d_cfg in dataset_cfgs:
-            out = self._output_dir / f"{model_cfg.name}_{d_cfg.name}.jsonl"
             all_items = self._get_prompts(d_cfg)
-            existing = get_existing_ids(out)
-            if any(make_prompt_id(d_cfg.name, p) not in existing
+            existing = set(self._dataset_store)
+            if any(make_entry_id(d_cfg.name, p, model_cfg.model_id) not in existing
                    for p, _ in all_items):
                 return True
         return False
@@ -879,7 +897,7 @@ class ResponseGenerator:
 
     def _run_for_model(self, model_cfg: ResolvedModelConfig,
                        dataset_cfgs: list[DatasetConfig],
-                       run_id: str, machine_id: str) -> None:
+                       run_id: str) -> None:
         _console.print(f"\n{'='*60}")
         _console.print(f"Model  : [bold]{model_cfg.name}[/bold]  ({model_cfg.model_id})")
         _console.print(f"Backend: {model_cfg.backend}")
@@ -903,10 +921,10 @@ class ResponseGenerator:
         try:
             if self.config.generation.run_mode == "interleaved":
                 self._run_interleaved(loaded, model_cfg, dataset_cfgs,
-                                      chunk_size, max_retries, run_id, machine_id)
+                                      chunk_size, max_retries, run_id)
             else:
                 self._run_sequential(loaded, model_cfg, dataset_cfgs,
-                                     chunk_size, max_retries, run_id, machine_id)
+                                     chunk_size, max_retries, run_id)
         finally:
             if isinstance(loaded, LoadedModel):
                 del loaded.llm
@@ -916,25 +934,22 @@ class ResponseGenerator:
     # ── sequential & interleaved ─────────────────────────────────────────────
 
     def _run_sequential(self, loaded, model_cfg, dataset_cfgs,
-                        chunk_size, max_retries, run_id, machine_id) -> None:
+                        chunk_size, max_retries, run_id) -> None:
         for d_cfg in dataset_cfgs:
             if _shutdown_requested:
                 break
             self._process_dataset(loaded, model_cfg, d_cfg, chunk_size,
-                                  max_retries, run_id, machine_id)
+                                  max_retries, run_id)
 
     def _run_interleaved(self, loaded, model_cfg, dataset_cfgs,
-                         chunk_size, max_retries, run_id, machine_id) -> None:
+                         chunk_size, max_retries, run_id) -> None:
         """Round-robin one chunk per dataset per cycle."""
         queues: dict[str, list[tuple[str, dict]]] = {}
-        out_paths: dict[str, Path] = {}
         for d_cfg in dataset_cfgs:
-            out = self._output_dir / f"{model_cfg.name}_{d_cfg.name}.jsonl"
-            out_paths[d_cfg.name] = out
             all_items = self._get_prompts(d_cfg)
-            existing = get_existing_ids(out)
+            existing = set(self._dataset_store)
             remaining = [(p, meta) for p, meta in all_items
-                         if make_prompt_id(d_cfg.name, p) not in existing]
+                         if make_entry_id(d_cfg.name, p, model_cfg.model_id) not in existing]
             queues[d_cfg.name] = remaining
             if remaining:
                 _console.print(f"  {d_cfg.name}: {len(remaining)}/{len(all_items)} "
@@ -963,23 +978,22 @@ class ResponseGenerator:
                     chunk, queues[d_name] = q[:chunk_size], q[chunk_size:]
                     self._process_chunk(
                         loaded, model_cfg, d_lookup[d_name], chunk,
-                        out_paths[d_name], max_retries, run_id, machine_id,
+                        max_retries, run_id,
                         stats, progress, task,
                     )
 
     # ── dataset processor ───────────────────────────────────────────────────
 
     def _process_dataset(self, loaded, model_cfg, d_cfg, chunk_size,
-                         max_retries, run_id, machine_id) -> None:
-        output_path = self._output_dir / f"{model_cfg.name}_{d_cfg.name}.jsonl"
+                         max_retries, run_id) -> None:
         all_items = self._get_prompts(d_cfg)
-        existing = get_existing_ids(output_path)
+        existing = set(self._dataset_store)
         remaining = [(p, meta) for p, meta in all_items
-                     if make_prompt_id(d_cfg.name, p) not in existing]
+                     if make_entry_id(d_cfg.name, p, model_cfg.model_id) not in existing]
         if not remaining:
             return
 
-        _console.print(f"\nDataset: [cyan]{d_cfg.name}[/cyan] → {output_path}")
+        _console.print(f"\nDataset: [cyan]{d_cfg.name}[/cyan] → {self._dataset_path}")
         _console.print(f"  {len(remaining)}/{len(all_items)} new prompts")
 
         stats = _ChunkStats()
@@ -994,7 +1008,7 @@ class ResponseGenerator:
                     break
                 chunk = remaining[start:start + chunk_size]
                 self._process_chunk(loaded, model_cfg, d_cfg, chunk,
-                                    output_path, max_retries, run_id, machine_id,
+                                    max_retries, run_id,
                                     stats, progress, task)
 
     # ── chunk processing ────────────────────────────────────────────────────
@@ -1019,10 +1033,8 @@ class ResponseGenerator:
         model_cfg: ResolvedModelConfig,
         d_cfg: DatasetConfig,
         chunk: list[tuple[str, dict]],
-        output_path: Path,
         max_retries: int,
         run_id: str,
-        machine_id: str,
         stats: _ChunkStats,
         progress: Progress,
         task: Any,
@@ -1055,12 +1067,13 @@ class ResponseGenerator:
                 d_cfg=d_cfg,
                 loaded=loaded,
                 run_id=run_id,
-                machine_id=machine_id,
                 generated_at=generated_at,
             )
-            append_entry(entry, output_path)
+            self._dataset_store[entry.id] = entry
             if not openai_mode:
                 stats.record(result["finish_reason"])
+
+        write_dataset_store(self._dataset_path, self._dataset_store)
 
         tok_per_s = total_tokens / dt
         if openai_mode:
@@ -1082,10 +1095,10 @@ class ResponseGenerator:
         d_cfg: DatasetConfig,
         loaded: LoadedModel | LoadedOpenAIModel,
         run_id: str,
-        machine_id: str,
         generated_at: str,
     ) -> ConversationEntry:
         prompt_id = make_prompt_id(d_cfg.name, prompt)
+        entry_id = make_entry_id(d_cfg.name, prompt, model_cfg.model_id)
 
         messages: list[dict[str, str]] = []
         if model_cfg.system_prompt:
@@ -1108,42 +1121,54 @@ class ResponseGenerator:
             prompt_safety = "unknown"
 
         entry = ConversationEntry(
-            id=prompt_id,
+            id=entry_id,
             messages=messages,
             annotations=[],
             model=model_cfg.model_id,
             judge="",
             metadata={
-                "run_id": run_id,
-                "machine_id": machine_id,
-                "generated_at": generated_at,
-                "model_name": model_cfg.name,
-                "backend": model_cfg.backend,
-                "quantization": getattr(loaded, "actual_quantization", None),
-                "max_new_tokens": model_cfg.max_new_tokens,
-                "temperature": model_cfg.temperature,
-                "top_p": model_cfg.top_p,
-                "top_k": model_cfg.top_k,
-                "min_p": model_cfg.min_p,
-                "presence_penalty": model_cfg.presence_penalty,
-                "repetition_penalty": model_cfg.repetition_penalty,
-                "system_prompt": model_cfg.system_prompt,
-                "gpu_memory_utilization": (model_cfg.gpu_memory_utilization
-                                           if model_cfg.backend == "vllm" else None),
-                "actual_max_model_len": getattr(loaded, "actual_max_model_len", None),
-                "actual_enforce_eager": getattr(loaded, "actual_enforce_eager", None),
-                "finish_reason": result["finish_reason"],
-                "n_new_tokens": result["n_new_tokens"],
-                "has_reasoning": result["reasoning"] is not None,
                 "dataset_name": d_cfg.name,
                 "dataset_source": d_cfg.source,
                 "dataset_path": d_cfg.path,
+                "dataset_row": row_meta,
                 "prompt_id": prompt_id,
                 "prompt_safety": prompt_safety,
-                "dataset_row": row_meta,
-                "approved": _is_approved(result["finish_reason"],
-                                         result["reasoning"],
-                                         result["response"]),
+                "generation": {
+                    "run_id": run_id,
+                    "generated_at": generated_at,
+                    "model_name": model_cfg.name,
+                    "model_id": model_cfg.model_id,
+                    "backend": model_cfg.backend,
+                    "quantization": getattr(loaded, "actual_quantization", None),
+                    "max_new_tokens": model_cfg.max_new_tokens,
+                    "temperature": model_cfg.temperature,
+                    "top_p": model_cfg.top_p,
+                    "top_k": model_cfg.top_k,
+                    "min_p": model_cfg.min_p,
+                    "presence_penalty": model_cfg.presence_penalty,
+                    "repetition_penalty": model_cfg.repetition_penalty,
+                    "system_prompt": model_cfg.system_prompt,
+                    "gpu_memory_utilization": (
+                        model_cfg.gpu_memory_utilization if model_cfg.backend == "vllm" else None
+                    ),
+                    "actual_max_model_len": getattr(loaded, "actual_max_model_len", None),
+                    "actual_enforce_eager": getattr(loaded, "actual_enforce_eager", None),
+                    "finish_reason": result["finish_reason"],
+                    "n_new_tokens": result["n_new_tokens"],
+                    "has_reasoning": result["reasoning"] is not None,
+                    "generation_hash": make_generation_hash(result["reasoning"]),
+                },
+                "generation_hash": make_generation_hash(result["reasoning"]),
+                "quality": {
+                    "approved": _is_approved(
+                        result["finish_reason"],
+                        result["reasoning"],
+                        result["response"],
+                    ),
+                    "issues": [],
+                    "checked_at": generated_at,
+                },
+                "approved": _is_approved(result["finish_reason"], result["reasoning"], result["response"]),
             },
         )
         return entry
