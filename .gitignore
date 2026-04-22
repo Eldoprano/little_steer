@@ -109,3 +109,6 @@ data/dataset.parquet
 
 # Migration artifacts
 data/dataset_migration_report.json
+2_labeling/2b_sentence/_artifacts/*
+data/*.checkpoint.json
+data/dataset.lock

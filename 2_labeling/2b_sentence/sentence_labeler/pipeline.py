@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import random
@@ -700,6 +701,54 @@ def process_file(
 
 # ── Breadth-first processor ───────────────────────────────────────────────────
 
+def _atomic_merge_label_runs(
+    dataset_path: Path,
+    new_entries: dict[str, ConversationEntry],
+) -> None:
+    """Merge labeled entries back into dataset.jsonl under an exclusive file lock.
+
+    Multiple judge subprocesses may call this concurrently.  The lock file
+    (dataset.jsonl.lock) ensures only one process reads-modifies-writes at a
+    time.  The actual write uses a tmp file + atomic rename so a crash mid-write
+    never leaves a corrupt dataset.
+
+    For each entry that was labeled in this run, we re-read its current state
+    from the file (which may already contain other judges' label_runs) and
+    merge our new label_run on top, so no judge's work overwrites another's.
+    """
+    if not new_entries:
+        return
+
+    lock_path = dataset_path.with_suffix(".lock")
+    tmp_path = dataset_path.with_suffix(".jsonl.tmp")
+
+    with open(lock_path, "w") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as out_fh:
+                with open(dataset_path, encoding="utf-8") as in_fh:
+                    for line in in_fh:
+                        stripped = line.strip()
+                        if not stripped:
+                            out_fh.write(line)
+                            continue
+                        try:
+                            current = ConversationEntry.model_validate_json(stripped)
+                            if current.id in new_entries:
+                                # Merge: apply our label_runs onto the current
+                                # file version (may have other judges' runs).
+                                for run in new_entries[current.id].label_runs:
+                                    current.upsert_label_run(run, activate=True)
+                                out_fh.write(current.model_dump_json() + "\n")
+                            else:
+                                out_fh.write(line)
+                        except Exception:
+                            out_fh.write(line)
+            tmp_path.replace(dataset_path)
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
 def process_breadth_first(
     flat_order: list[dict[str, str]],
     input_dir: Path,
@@ -722,34 +771,53 @@ def process_breadth_first(
 ) -> tuple[int, int, int, int]:
     """Process entries from a breadth-first flat_order across multiple source files.
 
-    Entries are processed in the interleaved order defined by flat_order, which
-    alternates across all source files (round-robin).  A budget-limited run will
-    therefore label a few entries from every file before going deeper into any one.
+    When the source file is dataset.jsonl, results are written back in-place
+    using an exclusive file lock so parallel judge subprocesses don't overwrite
+    each other.  A try/finally guarantees the merge runs even on Ctrl+C.
 
     Returns (labeled, skipped, failed, budget_stopped).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect unique source files (preserving appearance order)
     file_names: list[str] = list(dict.fromkeys(item["file"] for item in flat_order))
 
-    # Per-file output paths, checkpoints, write locks
     output_paths: dict[str, Path] = {}
     checkpoints: dict[str, CheckpointManager] = {}
     done_ids_per_file: dict[str, set[str]] = {}
     done_hashes_per_file: dict[str, dict[str, str]] = {}
     write_locks: dict[str, threading.Lock] = {}
+    in_place_fnames: set[str] = set()
+    # Entries labeled in this run, collected for the atomic merge at the end
+    in_place_new_entries: dict[str, dict[str, ConversationEntry]] = {}
 
     for fname in file_names:
-        out = output_dir / (Path(fname).stem + output_suffix + ".jsonl")
+        fpath = input_dir / fname
+        if fname == "dataset.jsonl":
+            # In-place mode: write back to the dataset itself.
+            # Use a per-judge checkpoint so judges don't share state.
+            out = fpath
+            cp_path = fpath.parent / f"dataset{output_suffix}.checkpoint.json"
+            in_place_fnames.add(fname)
+            in_place_new_entries[fname] = {}
+        else:
+            out = output_dir / (Path(fname).stem + output_suffix + ".jsonl")
+            cp_path = out.with_suffix(".checkpoint.json")
+
         output_paths[fname] = out
-        cp = CheckpointManager(out.with_suffix(".checkpoint.json"))
+        cp = CheckpointManager(cp_path)
         if reset_checkpoints:
             cp.delete()
         checkpoints[fname] = cp
-        scanned_ids, scanned_hashes = _scan_existing_ids(out)
-        done_ids_per_file[fname] = cp.load() | scanned_ids
-        done_hashes_per_file[fname] = scanned_hashes
+
+        if fname not in in_place_fnames:
+            scanned_ids, scanned_hashes = _scan_existing_ids(out)
+            done_ids_per_file[fname] = cp.load() | scanned_ids
+            done_hashes_per_file[fname] = scanned_hashes
+        else:
+            # Will be populated below after entries are loaded
+            done_ids_per_file[fname] = cp.load()
+            done_hashes_per_file[fname] = {}
+
         write_locks[fname] = threading.Lock()
 
     # Load all source entries into memory
@@ -770,7 +838,18 @@ def process_breadth_first(
                         console.print(f"[yellow]  Skip malformed line in {fname}: {exc}[/yellow]")
         all_entries[fname] = entries
 
-    # Filter to entries that still need labeling
+        # For in-place files: mark entries already labeled by this judge as done
+        if fname in in_place_fnames:
+            for e in entries.values():
+                gen_hash = e.metadata.get("generation_hash") or _compute_generation_hash(e)
+                if _matching_label_run(
+                    e,
+                    judge_name=judge_cfg.name,
+                    taxonomy_version=taxonomy_version,
+                    generation_hash=gen_hash,
+                ) is not None:
+                    done_ids_per_file[fname].add(e.id)
+
     todo = [
         item for item in flat_order
         if item["file"] in all_entries
@@ -790,7 +869,6 @@ def process_breadth_first(
         if entry is None:
             return "skipped"
         if eid in done_ids_per_file.get(fname, set()):
-            # Re-label if the generation changed since last run
             source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
             stored_hash = done_hashes_per_file.get(fname, {}).get(eid)
             if stored_hash and source_hash and source_hash != stored_hash:
@@ -808,7 +886,6 @@ def process_breadth_first(
             return "budget"
         if entry_limit is not None and not entry_limit.can_proceed():
             return "budget"
-        # Skip entries flagged as low quality.
         if entry.metadata.get("approved") is False:
             return "skipped"
         generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
@@ -866,7 +943,6 @@ def process_breadth_first(
 
         try:
             is_unsafe = entry.metadata.get("prompt_safety") == "unsafe"
-            
             labeling_output = label_entry(
                 client=client,
                 cfg=judge_cfg,
@@ -915,40 +991,53 @@ def process_breadth_first(
         )
 
         with write_locks[fname]:
-            with open(output_paths[fname], "a", encoding="utf-8") as f:
-                f.write(updated_entry.model_dump_json() + "\n")
+            if fname in in_place_fnames:
+                # Collect for atomic merge into dataset.jsonl at the end
+                in_place_new_entries[fname][eid] = updated_entry
+            else:
+                with open(output_paths[fname], "a", encoding="utf-8") as f:
+                    f.write(updated_entry.model_dump_json() + "\n")
             checkpoints[fname].mark_done(eid)
 
         return "labeled"
 
-    with ThreadPoolExecutor(max_workers=pipeline_cfg.max_workers) as pool:
-        futures = {pool.submit(_process_item, item): item for item in todo}
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-            except Exception as exc:
-                item = futures[future]
-                console.print(f"[red]  Unexpected error [{item['id'][:12]}]: {exc}[/red]")
-                result = "failed"
+    try:
+        with ThreadPoolExecutor(max_workers=pipeline_cfg.max_workers) as pool:
+            futures = {pool.submit(_process_item, item): item for item in todo}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    item = futures[future]
+                    console.print(f"[red]  Unexpected error [{item['id'][:12]}]: {exc}[/red]")
+                    result = "failed"
 
-            if result == "labeled":
-                labeled += 1
-                since_checkpoint += 1
-                if since_checkpoint >= pipeline_cfg.checkpoint_every:
-                    for cp in checkpoints.values():
-                        cp.save()
-                    since_checkpoint = 0
-            elif result == "skipped":
-                skipped += 1
-            elif result == "budget":
-                budget_stopped += 1
-            else:
-                failed += 1
+                if result == "labeled":
+                    labeled += 1
+                    since_checkpoint += 1
+                    if since_checkpoint >= pipeline_cfg.checkpoint_every:
+                        for cp in checkpoints.values():
+                            cp.save()
+                        since_checkpoint = 0
+                elif result == "skipped":
+                    skipped += 1
+                elif result == "budget":
+                    budget_stopped += 1
+                else:
+                    failed += 1
 
-            progress.advance(task_id)
-
-    for cp in checkpoints.values():
-        cp.save()
+                progress.advance(task_id)
+    finally:
+        # Runs on normal exit, budget stop, AND Ctrl+C — so no labeled work is lost.
+        for cp in checkpoints.values():
+            cp.save()
+        for fname in in_place_fnames:
+            if in_place_new_entries[fname]:
+                console.print(
+                    f"[dim]Merging {len(in_place_new_entries[fname])} labeled entries "
+                    f"into {output_paths[fname].name}…[/dim]"
+                )
+                _atomic_merge_label_runs(output_paths[fname], in_place_new_entries[fname])
 
     return labeled, skipped, failed, budget_stopped
 

@@ -219,7 +219,7 @@ class MapperConfig(BaseModel):
 
 
 class OutputConfig(BaseModel):
-    dir: str = "../../data/2b_labeled"
+    dir: str = "../../data"
     suffix: str = ""
     in_place: bool = False
     taxonomy_version: str = ""  # when set, output goes to {dir}/{taxonomy_version}/

@@ -36,7 +36,7 @@ defaults:
     max_lookahead_min: 500
 
   output:
-    dir: "../../data/2b_labeled"
+    dir: "../../data"
     in_place: false
 
 

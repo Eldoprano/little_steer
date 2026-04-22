@@ -33,23 +33,25 @@ HERE = Path(__file__).parent
 ARTIFACTS_DIR = HERE / "_artifacts"
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR = (HERE / "../../data/2b_labeled").resolve()
+DATASET_FILE = (HERE / "../../data/dataset.jsonl").resolve()
 
 LABELERS_FILE = "labelers.yaml"  # single source of truth; edit to add/enable/disable labelers
 
-# Only process input files whose names contain at least one of these substrings.
-# Set to None (or empty list) to process all files.
-INCLUDE_FILES = [
-    "deepseek-r1-distill-llama-8b_",           # base model
-    "deepseek-r1-distill-llama-8b-self-heretic_",  # self-heretic variant
-    "gemma-4-26b-a4b_",
-    "gemma-4-26b-a4b-heretic_",
-    "gpt-oss-20b_",
-    "gpt-oss-20b-heretic-ara-v3-i1_",
-    "ministral-3-8B-Reasoning-2512_",
-    "ministral-3-8B-Reasoning-2512-self-heretic_",
-    "phi-4-reasoning-14B_",
-    "qwen3.5-9B_",
-    "qwen3.5-9B-heretic-v2_",
+# Only process entries whose model field contains at least one of these substrings.
+# Set to None (or empty list) to process all entries.
+INCLUDE_MODELS = [
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    "simmessa/DeepSeek-R1-Distill-Llama-8B-heretic",
+    "AISafety-Student/DeepSeek-R1-Distill-Llama-8B-heretic",
+    "google/gemma-4-26b-a4b",
+    "nohurry/gemma-4-26B-A4B-it-heretic-GGUF",
+    "gpt-oss-20b",
+    "gpt-oss-20b-heretic-ara-v3-i1",
+    "mistralai/Ministral-3-8B-Reasoning-2512",
+    "ministral-3-8b-reasoning-2512-heretic_gguf",
+    "unsloth/Phi-4-reasoning-GGUF",
+    "Qwen/Qwen3.5-9B",
+    "trohrbaugh/Qwen3.5-9B-heretic-v2",
 ]
 
 # Matches ANSI escape codes and Unicode spinner/box-drawing characters
@@ -119,17 +121,51 @@ def read_budget_used(meta: JudgeMeta) -> int:
         return 0
 
 
-def count_labeled(suffix: str, taxonomy_version: str = "") -> int:
-    base = OUTPUT_DIR / taxonomy_version if taxonomy_version else OUTPUT_DIR
-    if not base.exists():
+# Cache: (mtime, counts_by_judge_name)
+_labeled_cache: tuple[float, dict[str, int]] | None = None
+
+
+def _scan_dataset_counts() -> dict[str, int]:
+    """Scan dataset.jsonl once and return a count per judge_name."""
+    counts: dict[str, int] = {}
+    if not DATASET_FILE.exists():
+        return counts
+    try:
+        with open(DATASET_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    runs = json.loads(line).get("label_runs") or []
+                    seen: set[str] = set()
+                    for r in runs:
+                        jn = r.get("judge_name")
+                        if jn and jn not in seen:
+                            counts[jn] = counts.get(jn, 0) + 1
+                            seen.add(jn)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return counts
+
+
+def count_labeled(judge_name: str) -> int:
+    """Count entries in dataset.jsonl that have a label_run from this judge.
+
+    Result is cached until dataset.jsonl is modified.
+    """
+    global _labeled_cache
+    if not DATASET_FILE.exists() or not judge_name:
         return 0
-    total = 0
-    for f in base.glob(f"*{suffix}.jsonl"):
-        try:
-            total += sum(1 for _ in open(f))
-        except Exception:
-            pass
-    return total
+    try:
+        mtime = DATASET_FILE.stat().st_mtime
+    except OSError:
+        return 0
+    if _labeled_cache is None or _labeled_cache[0] != mtime:
+        _labeled_cache = (mtime, _scan_dataset_counts())
+    return _labeled_cache[1].get(judge_name, 0)
 
 
 def _clean(line: str) -> str:
@@ -244,7 +280,7 @@ def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
     for state in states:
         log = parse_log(state.meta.logfile)
         used = read_budget_used(state.meta)
-        labeled = count_labeled(state.meta.suffix, state.meta.taxonomy_version)
+        labeled = count_labeled(state.meta.name)
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -288,7 +324,7 @@ def print_status(console: Console, metas: list[JudgeMeta]) -> None:
         proc_text = Text(f"running (pid {pid})", style="green") if pid else Text("stopped", style="dim")
         log = parse_log(meta.logfile)
         used = read_budget_used(meta)
-        labeled = count_labeled(meta.suffix, meta.taxonomy_version)
+        labeled = count_labeled(meta.name)
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -312,89 +348,87 @@ WORK_ORDER_FILE = HERE / "work_order.json"
 WORK_ORDER_SEED = 42
 
 
-def _count_labeled_for_file(stem: str) -> int:
-    """Count how many judges have any labeled output for the given input file stem."""
-    if not OUTPUT_DIR.exists():
-        return 0
-    return sum(1 for f in OUTPUT_DIR.glob(f"{stem}_*.jsonl") if f.stat().st_size > 0)
+def _collect_labeled_ids() -> set[str]:
+    """Scan all existing judge output files and return the union of labeled entry IDs."""
+    labeled: set[str] = set()
+    for version_dir in OUTPUT_DIR.iterdir() if OUTPUT_DIR.exists() else []:
+        search_dir = version_dir if version_dir.is_dir() else OUTPUT_DIR
+        for fpath in search_dir.glob("*.jsonl"):
+            try:
+                with open(fpath) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            eid = json.loads(line).get("id")
+                            if eid:
+                                labeled.add(eid)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        if not version_dir.is_dir():
+            break  # OUTPUT_DIR has no subdirs, already searched it directly
+    return labeled
 
 
-def generate_work_order(input_dir: Path, output_path: Path, seed: int) -> None:
-    """Generate a shared breadth-first work order that all judges will follow.
+def generate_work_order(dataset_file: Path, output_path: Path, seed: int) -> None:
+    """Generate a shared work order from the unified dataset.jsonl file.
 
-    Strategy: round-robin interleaving across all files so that with any daily
-    budget, every model/dataset gets roughly equal coverage.
-
-    File ordering within each round:
-      1. Files where at least one judge has already labeled some entries
-         — sorted by how many judges are ahead, descending (catch-up first)
-      2. Files not yet touched by any judge — shuffled randomly
-
-    Within each file, entries are shuffled with a fixed seed.
-    flat_order is the canonical processing sequence: one entry from file 1,
-    one from file 2, ..., one from file N, then repeat.  This ensures that
-    any budget-limited run labels a few entries from EVERY file before going
-    deeper into any single file.
+    Strategy: entries that have already been labeled by at least one judge go
+    first (so we can quickly get multi-judge coverage for comparison), then
+    untouched entries shuffled with a fixed seed.
     """
     import random as _rng_mod
     rng = _rng_mod.Random(seed)
 
-    input_files = sorted(input_dir.glob("*.jsonl"))
-    if INCLUDE_FILES:
-        input_files = [f for f in input_files if any(pat in f.name for pat in INCLUDE_FILES)]
-    if not input_files:
-        raise FileNotFoundError(f"No .jsonl files found in {input_dir}")
+    if not dataset_file.exists():
+        raise FileNotFoundError(f"Dataset file not found: {dataset_file}")
 
-    # Split into already-started vs untouched, then sort/shuffle each group
-    started = sorted(
-        [f for f in input_files if _count_labeled_for_file(f.stem) > 0],
-        key=lambda f: _count_labeled_for_file(f.stem),
-        reverse=True,
-    )
-    untouched = [f for f in input_files if _count_labeled_for_file(f.stem) == 0]
-    rng.shuffle(untouched)
-    file_order = started + untouched
+    # IDs that appear in any existing judge output file
+    already_labeled_ids = _collect_labeled_ids()
 
-    # Load and shuffle IDs per file
-    per_file: dict[str, list[str]] = {}
-    for fpath in file_order:
-        ids: list[str] = []
-        with open(fpath) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+    started_ids: list[str] = []
+    untouched_ids: list[str] = []
+
+    with open(dataset_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                eid = data.get("id")
+                if not eid:
                     continue
-                try:
-                    data = json.loads(line)
-                    if "id" in data:
-                        ids.append(data["id"])
-                except Exception:
-                    pass
-        rng.shuffle(ids)
-        per_file[fpath.name] = ids
+                model = data.get("model", "")
+                if INCLUDE_MODELS and not any(pat in model for pat in INCLUDE_MODELS):
+                    continue
+                if eid in already_labeled_ids or data.get("label_runs"):
+                    started_ids.append(eid)
+                else:
+                    untouched_ids.append(eid)
+            except Exception:
+                pass
 
-    # Build flat round-robin order across all files
-    # Round 1: entry[0] from file1, entry[0] from file2, ..., entry[0] from fileN
-    # Round 2: entry[1] from file1, entry[1] from file2, ..., entry[1] from fileN
-    # etc.
-    file_names = [f.name for f in file_order]
-    queues: dict[str, list[str]] = {fname: list(ids) for fname, ids in per_file.items()}
-    flat_order: list[dict[str, str]] = []
-    while any(queues[fname] for fname in file_names):
-        for fname in file_names:
-            if queues[fname]:
-                flat_order.append({"file": fname, "id": queues[fname].pop(0)})
+    rng.shuffle(untouched_ids)
+    ordered_ids = started_ids + untouched_ids
+
+    fname = dataset_file.name  # "dataset.jsonl"
+    flat_order = [{"file": fname, "id": eid} for eid in ordered_ids]
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
-        "strategy": "breadth_first_round_robin",
+        "strategy": "dataset_unified",
         "total_entries": len(flat_order),
-        "started_files": len(started),
-        "untouched_files": len(untouched),
-        "file_order": file_names,
+        "started_entries": len(started_ids),
+        "untouched_entries": len(untouched_ids),
+        "dataset_file": str(dataset_file),
+        "file_order": [fname],
         "flat_order": flat_order,
-        "per_file": per_file,  # kept for checkpoint compatibility
+        "per_file": {fname: ordered_ids},
     }
     output_path.write_text(json.dumps(payload, indent=2))
 
@@ -423,8 +457,20 @@ def main() -> None:
         print_status(console, metas)
         return
 
-    input_arg = sys.argv[1] if len(sys.argv) > 1 else "../../data/1_generated/"
-    input_dir = (HERE / input_arg).resolve() if not Path(input_arg).is_absolute() else Path(input_arg)
+    input_arg = sys.argv[1] if len(sys.argv) > 1 else str(DATASET_FILE)
+    input_path = Path(input_arg) if Path(input_arg).is_absolute() else (HERE / input_arg).resolve()
+
+    # Detect stale work order (built against old per-file structure, not dataset.jsonl)
+    if WORK_ORDER_FILE.exists():
+        with open(WORK_ORDER_FILE) as f:
+            _wo_check = json.load(f)
+        _first = (_wo_check.get("flat_order") or [{}])[0]
+        if _first.get("file") != "dataset.jsonl":
+            console.print(
+                "[bold yellow]Work order references old per-file structure — "
+                "deleting and regenerating from dataset.jsonl...[/bold yellow]"
+            )
+            WORK_ORDER_FILE.unlink()
 
     # Ensure work order exists — generate it if not
     if not WORK_ORDER_FILE.exists():
@@ -433,13 +479,12 @@ def main() -> None:
             f"(all entries, seed={WORK_ORDER_SEED})...[/bold yellow]"
         )
         try:
-            generate_work_order(input_dir, WORK_ORDER_FILE, WORK_ORDER_SEED)
+            generate_work_order(input_path, WORK_ORDER_FILE, WORK_ORDER_SEED)
             with open(WORK_ORDER_FILE) as f:
                 wo = json.load(f)
             console.print(
-                f"[green]Generated:[/green] {wo['total_entries']} entries across "
-                f"{len(wo['file_order'])} files "
-                f"({wo['started_files']} already started, {wo['untouched_files']} untouched)\n"
+                f"[green]Generated:[/green] {wo['total_entries']} entries "
+                f"({wo['started_entries']} already labeled, {wo['untouched_entries']} untouched)\n"
             )
         except Exception as e:
             console.print(f"[red]Failed to generate work order: {e}[/red]")
@@ -448,12 +493,11 @@ def main() -> None:
         with open(WORK_ORDER_FILE) as f:
             wo = json.load(f)
         console.print(
-            f"[dim]Work order:[/dim] {wo['total_entries']} entries across "
-            f"{len(wo['file_order'])} files — "
+            f"[dim]Work order:[/dim] {wo['total_entries']} entries — "
             f"generated {wo['generated_at'][:10]}\n"
         )
 
-    console.print(f"[bold]Starting {len(metas)} judges on:[/bold] {input_arg}")
+    console.print(f"[bold]Starting {len(metas)} judges on:[/bold] {input_path}")
     console.print(f"Logs: run_all_<judge>.log   |   Ctrl+C to stop\n")
 
     # Launch all judge subprocesses
@@ -464,7 +508,7 @@ def main() -> None:
         log_fh = open(meta.logfile, "w")
         log_handles.append(log_fh)
         proc = subprocess.Popen(
-            ["uv", "run", "run.py", "--config", meta.config_file, "--judge", meta.name, input_arg],
+            ["uv", "run", "run.py", "--config", meta.config_file, "--judge", meta.name, str(input_path)],
             cwd=str(HERE),
             stdout=log_fh,
             stderr=log_fh,
@@ -504,7 +548,7 @@ def main() -> None:
                 pass
 
     console.print()
-    total = sum(count_labeled(s.meta.suffix, s.meta.taxonomy_version) for s in states)
+    total = sum(count_labeled(s.meta.name) for s in states)
     console.print(f"[bold green]=== All done ===[/bold green]  total labeled: [green]{total}[/green]")
 
 
