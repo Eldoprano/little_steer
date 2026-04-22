@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""Export the canonical JSONL dataset to Parquet and/or push to HuggingFace Hub.
-
-Usage:
-    uv run python export_hf.py                    # export to dataset.parquet only
-    uv run python export_hf.py --push             # export + push to HuggingFace
-    uv run python export_hf.py --push --dry-run   # show what would be pushed
-"""
+"""Interactive export and HuggingFace push tool for the canonical dataset."""
 
 from __future__ import annotations
 
-import argparse
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
 
 console = Console()
 
 HF_REPO_ID = "Eldoprano/little-steer"
 
-_SECRETS_PATH = Path(__file__).resolve().parent.parent / ".secrets.json"
-_DEFAULT_INPUT = Path(__file__).resolve().parent / "dataset.jsonl"
-_DEFAULT_OUTPUT = Path(__file__).resolve().parent / "dataset.parquet"
+_ROOT = Path(__file__).resolve().parent
+_DATASET_PATH = _ROOT / "dataset.jsonl"
+_PARQUET_PATH = _ROOT / "dataset.parquet"
+_SECRETS_PATH = _ROOT.parent / ".secrets.json"
 
 
 def _load_hf_token() -> str:
@@ -35,63 +33,109 @@ def _load_hf_token() -> str:
     return token
 
 
-def export_parquet(input_path: Path, output_path: Path) -> "pd.DataFrame":
+def _mtime(path: Path) -> datetime | None:
+    if not path.exists():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+
+def _fmt_time(dt: datetime | None) -> str:
+    if dt is None:
+        return "[red]not found[/red]"
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _count_lines(path: Path) -> int:
+    count = 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+def _dataset_row_count() -> int | None:
+    if not _DATASET_PATH.exists():
+        return None
+    return _count_lines(_DATASET_PATH)
+
+
+def show_status() -> None:
+    dataset_mtime = _mtime(_DATASET_PATH)
+    parquet_mtime = _mtime(_PARQUET_PATH)
+    row_count = _dataset_row_count()
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="dim")
+    table.add_column()
+
+    table.add_row("dataset.jsonl", f"{_fmt_time(dataset_mtime)}" + (f"  ({row_count:,} entries)" if row_count else ""))
+    table.add_row("dataset.parquet", _fmt_time(parquet_mtime))
+
+    if dataset_mtime and parquet_mtime and parquet_mtime < dataset_mtime:
+        table.add_row("", "[yellow]⚠ Parquet is older than the JSONL — may be stale[/yellow]")
+    elif dataset_mtime and parquet_mtime and parquet_mtime >= dataset_mtime:
+        table.add_row("", "[green]✓ Parquet is up to date[/green]")
+
+    console.print(table)
+
+
+def export_parquet() -> None:
     import pandas as pd
 
-    df = pd.read_json(input_path, lines=True)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
-    console.print(f"[green]Exported[/green] {len(df):,} rows → [cyan]{output_path}[/cyan]")
-    return df
+    console.print(f"[bold]Exporting[/bold] dataset.jsonl → dataset.parquet …")
+    df = pd.read_json(_DATASET_PATH, lines=True)
+    _PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(_PARQUET_PATH, index=False)
+    console.print(f"[green]Done.[/green] {len(df):,} rows written to [cyan]{_PARQUET_PATH}[/cyan]")
 
 
-def push_to_hub(input_path: Path, repo_id: str, token: str, dry_run: bool) -> None:
+def push_to_hub() -> None:
     from datasets import load_dataset
 
-    console.print(f"[bold]Loading dataset from[/bold] {input_path}")
-    ds = load_dataset("json", data_files=str(input_path), split="train")
-    console.print(f"  {len(ds):,} rows, features: {list(ds.features.keys())}")
-
-    if dry_run:
-        console.print(f"[yellow]Dry run — would push to[/yellow] [bold]{repo_id}[/bold]")
-        return
-
-    console.print(f"[bold]Pushing to[/bold] [cyan]{repo_id}[/cyan] …")
-    ds.push_to_hub(
-        repo_id,
-        token=token,
-        private=False,
-    )
-    console.print(f"[green bold]Done.[/green bold] Dataset live at https://huggingface.co/datasets/{repo_id}")
+    token = _load_hf_token()
+    console.print(f"[bold]Loading dataset …[/bold]")
+    ds = load_dataset("json", data_files=str(_DATASET_PATH), split="train")
+    console.print(f"  {len(ds):,} rows loaded")
+    console.print(f"[bold]Pushing to[/bold] [cyan]{HF_REPO_ID}[/cyan] …")
+    ds.push_to_hub(HF_REPO_ID, token=token, private=False)
+    console.print(f"[green bold]Done.[/green bold] https://huggingface.co/datasets/{HF_REPO_ID}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("input", nargs="?", default=str(_DEFAULT_INPUT), help="Path to dataset.jsonl")
-    parser.add_argument("output", nargs="?", default=str(_DEFAULT_OUTPUT), help="Path to output Parquet file")
-    parser.add_argument("--push", action="store_true", help="Push to HuggingFace Hub after export")
-    parser.add_argument("--push-only", action="store_true", help="Skip Parquet export, push JSONL directly")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would happen without writing/pushing")
-    args = parser.parse_args()
+    if not _DATASET_PATH.exists():
+        console.print(f"[red]dataset.jsonl not found at {_DATASET_PATH}[/red]")
+        sys.exit(1)
 
-    input_path = Path(args.input).resolve()
-    output_path = Path(args.output).resolve()
+    console.rule("[bold]little-steer dataset export[/bold]")
+    show_status()
+    console.print()
 
-    if not input_path.exists():
-        console.print(f"[red]Dataset not found:[/red] {input_path}")
-        raise SystemExit(1)
+    choices = {
+        "1": "Update Parquet from dataset.jsonl",
+        "2": "Push dataset to HuggingFace",
+        "3": "Update Parquet, then push to HuggingFace",
+        "q": "Quit",
+    }
 
-    if not args.push_only:
-        if args.dry_run:
-            import pandas as pd
-            df = pd.read_json(input_path, lines=True)
-            console.print(f"[yellow]Dry run — would export[/yellow] {len(df):,} rows → [cyan]{output_path}[/cyan]")
-        else:
-            export_parquet(input_path, output_path)
+    for key, label in choices.items():
+        console.print(f"  [bold cyan]{key}[/bold cyan]  {label}")
 
-    if args.push or args.push_only:
-        token = _load_hf_token()
-        push_to_hub(input_path, HF_REPO_ID, token, dry_run=args.dry_run)
+    console.print()
+    choice = Prompt.ask("What do you want to do?", choices=list(choices.keys()), default="q")
+
+    if choice == "q":
+        console.print("Bye!")
+        return
+
+    console.print()
+
+    if choice in ("1", "3"):
+        export_parquet()
+        console.print()
+
+    if choice in ("2", "3"):
+        push_to_hub()
 
 
 if __name__ == "__main__":
