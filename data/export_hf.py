@@ -81,13 +81,13 @@ def show_status() -> None:
 
 
 def export_parquet() -> None:
-    import pandas as pd
+    from datasets import load_dataset
 
     console.print(f"[bold]Exporting[/bold] dataset.jsonl → dataset.parquet …")
-    df = pd.read_json(_DATASET_PATH, lines=True)
+    ds = load_dataset("json", data_files=str(_DATASET_PATH), split="train")
     _PARQUET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(_PARQUET_PATH, index=False)
-    console.print(f"[green]Done.[/green] {len(df):,} rows written to [cyan]{_PARQUET_PATH}[/cyan]")
+    ds.to_parquet(str(_PARQUET_PATH))
+    console.print(f"[green]Done.[/green] {len(ds):,} rows written to [cyan]{_PARQUET_PATH}[/cyan]")
 
 
 def push_to_hub() -> None:
