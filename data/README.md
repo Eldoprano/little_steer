@@ -1,74 +1,98 @@
 # data/
 
-This directory serves two purposes:
+This directory contains both the shared schema package and the canonical development dataset.
 
-1. **Shared Python package** (`thesis_schema`) — the data schema used by all pipeline steps
-2. **Data storage** — outputs produced by each step, organized by pipeline stage
+## Canonical Store
 
----
+The primary editable dataset is:
 
-## Shared Schema — `thesis_schema/`
+- `data/dataset.jsonl`
 
-A tiny Python package (only `pydantic` as a dependency) that defines the data structures shared across all steps.
+This file is the source of truth for development. It replaces the old staged workflow where generation and labeling lived in separate JSONL trees.
+
+Related utilities:
+
+- `dataset_health.py` checks canonical consistency
+- `migrate_to_canonical.py` builds the canonical file from legacy outputs
+- `export_hf.py` exports the canonical dataset for downstream use
+
+## Shared Schema
+
+Import from:
 
 ```python
-from thesis_schema import ConversationEntry, AnnotatedSpan
+from thesis_schema import AnnotatedSpan, ConversationEntry, LabelRun, SafetyRun
 ```
 
 ### `ConversationEntry`
 
-One conversation with a model. Fields:
+Core fields:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str` | MD5 hash of `(dataset_name, prompt_text)` — stable across runs |
-| `messages` | `list[dict]` | HuggingFace-style `[{"role": ..., "content": ...}]`. Roles: `system`, `user`, `assistant`, `reasoning` |
-| `annotations` | `list[AnnotatedSpan]` | Labeled spans (populated by step 2b) |
-| `model` | `str` | HuggingFace model ID |
-| `judge` | `str` | Labeler model used (empty before step 2b) |
-| `metadata` | `dict` | Run metadata (generation params, timestamps, etc.) |
+| `id` | `str` | Stable sample id for `(dataset_name, prompt_text, model_id)` |
+| `messages` | `list[dict]` | Message list with roles `system`, `user`, `reasoning`, `assistant` |
+| `annotations` | `list[AnnotatedSpan]` | Active spans mirrored from the active `label_run` |
+| `model` | `str` | Generator model id |
+| `judge` | `str` | Active judge mirrored from the active `label_run` |
+| `metadata` | `dict` | Prompt ids, generation metadata, quality state, active run metadata |
+| `label_runs` | `list[LabelRun]` | All labeling runs stored on the entry |
+| `safety_runs` | `list[SafetyRun]` | All safety-scoring runs stored on the entry |
+
+Important metadata:
+
+| Key | Description |
+|---|---|
+| `metadata.prompt_id` | Stable prompt id for `(dataset_name, prompt_text)` |
+| `metadata.generation_hash` | Hash of the current reasoning content |
+| `metadata.quality` | Quality findings and approval decision |
+| `metadata.active_label_run` | Canonical key for the currently mirrored label run |
 
 ### `AnnotatedSpan`
-
-A labeled span within a message. Fields:
 
 | Field | Type | Description |
 |---|---|---|
 | `text` | `str` | The annotated text |
-| `message_idx` | `int` | Index into `messages`; `-1` = absolute position across all messages |
+| `message_idx` | `int` | Index into `messages` |
 | `char_start` | `int` | Start character offset |
 | `char_end` | `int` | End character offset |
-| `labels` | `list[str]` | Assigned behavioral labels |
-| `score` | `float \| None` | Confidence score (optional) |
-| `meta` | `dict` | Extensible metadata |
+| `labels` | `list[str]` | Assigned behavior labels |
+| `score` | `float` | Judge-provided score / safety weight |
+| `meta` | `dict` | Extra metadata such as sentence index or original judge text |
 
----
+### `LabelRun`
 
-## Data Directories
+Stores one labeling pass for a specific `(judge_name, taxonomy_version, generation_hash)`.
 
-All data directories are gitignored. Use `LABEL_DATA_DIR` env var to point steps to a non-default location.
+Includes:
 
-| Directory | Produced by | Contents |
-|---|---|---|
-| `1_generated/` | `1_generating/` | `{model}_{dataset}.jsonl` — raw model responses |
-| `2a_evolved/` | `2_labeling/2a_evolving/` | `runs/{run_id}/state.json` — taxonomy evolution state |
-| `2b_labeled/` | `2_labeling/2b_sentence/` | `{name}.jsonl` — responses with sentence-level annotations |
-| `3_representations/` | `3_representations/` | `.pt` activation caches, steering vector files |
+- judge identity
+- taxonomy version
+- generation hash
+- assessment
+- raw sentence annotations
+- mapped spans
+- token usage / finish metadata
 
----
+### `SafetyRun`
 
-## Installing the schema package
+Stores one safety-scoring pass for a specific `(guard_name, generation_hash)`.
 
-Each step that needs the schema declares it as a local uv dependency:
+Includes:
 
-```toml
-# in each step's pyproject.toml
-[tool.uv.sources]
-thesis-schema = { path = "../../data" }   # adjust depth as needed
-```
+- guard identity
+- generation hash
+- scored timestamp
+- structured result payload
 
-Then import:
+## Development Model
 
-```python
-from thesis_schema import ConversationEntry, AnnotatedSpan
-```
+Recommended workflow:
+
+1. Generate into `data/dataset.jsonl`
+2. Label in place
+3. Score safety in place
+4. Run `dataset_health.py`
+5. Export to other formats only when needed
+
+Parquet should be treated as export-only, not as the editable source of truth.
