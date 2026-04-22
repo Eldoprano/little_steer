@@ -37,6 +37,9 @@ DATASET_FILE = (HERE / "../../data/dataset.jsonl").resolve()
 
 LABELERS_FILE = "labelers.yaml"  # single source of truth; edit to add/enable/disable labelers
 
+# Entries from these datasets are excluded from the work order entirely.
+EXCLUDE_DATASETS = ["lima"]
+
 # Only process entries whose model field contains at least one of these substrings.
 # Set to None (or empty list) to process all entries.
 INCLUDE_MODELS = [
@@ -402,6 +405,9 @@ def generate_work_order(dataset_file: Path, output_path: Path, seed: int) -> Non
                 eid = data.get("id")
                 if not eid:
                     continue
+                dataset_name = (data.get("metadata") or {}).get("dataset_name", "")
+                if EXCLUDE_DATASETS and dataset_name in EXCLUDE_DATASETS:
+                    continue
                 model = data.get("model", "")
                 if INCLUDE_MODELS and not any(pat in model for pat in INCLUDE_MODELS):
                     continue
@@ -436,7 +442,8 @@ def generate_work_order(dataset_file: Path, output_path: Path, seed: int) -> Non
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    console = Console()
+    is_tty = sys.stdout.isatty()
+    console = Console() if is_tty else Console(force_terminal=True)
 
     # Load config metadata from the registry
     registry = LabelerRegistry.from_yaml(HERE / LABELERS_FILE)
@@ -519,17 +526,32 @@ def main() -> None:
     start_time = time.monotonic()
 
     try:
-        with Live(console=console, refresh_per_second=0.5, screen=False) as live:
+        if is_tty:
+            with Live(console=console, refresh_per_second=0.5, screen=False) as live:
+                while True:
+                    for s in states:
+                        s.poll()
+                    live.update(build_dashboard(states, start_time))
+
+                    if all(not s.running for s in states if s.proc is not None):
+                        time.sleep(1)
+                        for s in states:
+                            s.poll()
+                        live.update(build_dashboard(states, start_time))
+                        break
+
+                    time.sleep(2)
+        else:
             while True:
                 for s in states:
                     s.poll()
-                live.update(build_dashboard(states, start_time))
+                console.print(build_dashboard(states, start_time))
 
                 if all(not s.running for s in states if s.proc is not None):
                     time.sleep(1)
                     for s in states:
                         s.poll()
-                    live.update(build_dashboard(states, start_time))
+                    console.print(build_dashboard(states, start_time))
                     break
 
                 time.sleep(2)

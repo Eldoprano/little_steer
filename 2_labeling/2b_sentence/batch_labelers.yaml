@@ -1,0 +1,72 @@
+# batch_labelers.yaml — Config for batch API labelers (50% discount).
+#
+# These labelers submit requests to provider batch APIs asynchronously.
+# Use batch_label.py to submit and batch_poll.py to check status + download results.
+#
+# Usage:
+#   uv run batch_label.py                        # submit all enabled labelers
+#   uv run batch_label.py --judge claude-haiku-4-5
+#   uv run batch_label.py --dry-run              # cost estimate only
+#   uv run batch_label.py --test                 # submit 1 entry to test
+#   uv run batch_poll.py                         # check status
+#   uv run batch_poll.py --download              # download + integrate results
+
+# ── Shared defaults ────────────────────────────────────────────────────────────
+defaults:
+  secrets_file: "../../.secrets.json"
+  prompt_file: "prompt.md"
+  system_prompt_file: "system_prompt.md"
+  batch:
+    n_samples: 1
+    batch_discount: 0.5
+    output_ratio: 1.0
+
+# ── Labelers ───────────────────────────────────────────────────────────────────
+labelers:
+  # ── Anthropic ───────────────────────────────────────────────────────────────
+  - enabled: true
+    judge:
+      name: claude-haiku-4-5
+      provider: anthropic
+      model_id: claude-haiku-4-5-20251001
+      api_key_source: anthropic-api-key
+      max_tokens: 8192
+      temperature: 0.2
+    batch:
+      price_per_1m_input_tokens: 1.00    # standard price; batch is 50% off
+      price_per_1m_output_tokens: 5.00
+      batch_discount: 0.5
+    output:
+      suffix: "_claude-haiku-4-5"
+
+  # ── OpenAI ──────────────────────────────────────────────────────────────────
+  - enabled: false
+    judge:
+      name: gpt-4o-mini-batch
+      provider: openai
+      model_id: gpt-4o-mini
+      api_key_source: openai-api-key
+      max_tokens: 8192
+      temperature: 0.2
+    batch:
+      price_per_1m_input_tokens: 0.15
+      price_per_1m_output_tokens: 0.60
+      batch_discount: 0.5
+    output:
+      suffix: "_gpt-4o-mini-batch"
+
+  # ── Gemini ──────────────────────────────────────────────────────────────────
+  - enabled: false
+    judge:
+      name: gemini-2.5-flash-batch
+      provider: gemini
+      model_id: gemini-2.5-flash
+      api_key_source: gemini-api-key
+      max_tokens: 8192
+      temperature: 0.2
+    batch:
+      price_per_1m_input_tokens: 0.15
+      price_per_1m_output_tokens: 0.60
+      batch_discount: 0.5
+    output:
+      suffix: "_gemini-2.5-flash-batch"
