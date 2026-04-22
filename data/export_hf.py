@@ -14,7 +14,7 @@ from rich.table import Table
 
 console = Console()
 
-HF_REPO_ID = "Eldoprano/little-steer"
+HF_REPO_ID = "AISafety-Student/little-steer"
 
 _ROOT = Path(__file__).resolve().parent
 _DATASET_PATH = _ROOT / "dataset.jsonl"
