@@ -9,6 +9,7 @@ interface Props {
   onClose: () => void;
   onReset: () => void;
   onClearData: () => void;
+  onSelectEntry?: (index: number) => void;
 }
 
 function downloadFile(content: string, filename: string, mime: string) {
@@ -23,7 +24,7 @@ function downloadFile(content: string, filename: string, mime: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function StatsView({ entries, state, onClose, onReset, onClearData }: Props) {
+export default function StatsView({ entries, state, onClose, onReset, onClearData, onSelectEntry }: Props) {
   const total = entries.length;
   const completed = entries.filter((e) => state.progress[e.id]?.completed).length;
   const inProgress = entries.filter(
@@ -54,6 +55,7 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
     const jsonl = exportAsJsonl(
       entries,
       state.progress as Parameters<typeof exportAsJsonl>[1],
+      state.handle || 'unknown'
     );
     if (!jsonl.trim()) {
       alert('No completed entries to export yet.');
@@ -177,8 +179,8 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 marginBottom: '6px',
               }}
             >
-              <span>Overall completion</span>
-              <span>{total > 0 ? Math.round((completed / total) * 100) : 0}%</span>
+              <span>Target progress (100 goal)</span>
+              <span>{Math.min(100, Math.round((completed / 100) * 100))}%</span>
             </div>
             <div
               style={{
@@ -190,13 +192,16 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
             >
               <div
                 style={{
-                  width: `${total > 0 ? (completed / total) * 100 : 0}%`,
+                  width: `${Math.min(100, (completed / 100) * 100)}%`,
                   height: '100%',
                   background: '#A7C080',
                   borderRadius: '4px',
                   transition: 'width 0.3s',
                 }}
               />
+            </div>
+            <div style={{ marginTop: '4px', fontSize: '10px', color: '#7A8478', textAlign: 'right' }}>
+              {completed} / 100 responses labeled
             </div>
           </div>
 
@@ -287,6 +292,12 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                 return (
                   <div
                     key={e.id}
+                    onClick={() => {
+                      if (onSelectEntry) {
+                        onSelectEntry(i);
+                        onClose();
+                      }
+                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -295,6 +306,14 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
                       background: isCurrent ? '#343F44' : '#2D353B',
                       borderRadius: '8px',
                       border: `1px solid ${isCurrent ? '#475258' : '#3D484D'}`,
+                      cursor: onSelectEntry ? 'pointer' : 'default',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseOver={(ev) => {
+                      if (onSelectEntry && !isCurrent) ev.currentTarget.style.background = '#3D484D';
+                    }}
+                    onMouseOut={(ev) => {
+                      if (onSelectEntry && !isCurrent) ev.currentTarget.style.background = '#2D353B';
                     }}
                   >
                     <span

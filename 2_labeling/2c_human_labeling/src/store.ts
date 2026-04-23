@@ -38,7 +38,7 @@ export function clearEntries(): void {
 // ── Progress storage ─────────────────────────────────────────────────────────
 
 export function defaultProgress(): PersistedState {
-  return { progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0 };
+  return { handle: null, progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0 };
 }
 
 /** Migrate old progress records that lack sentenceScores. */
@@ -47,7 +47,7 @@ function migrateProgress(p: PersistedState): PersistedState {
   for (const [id, ep] of Object.entries(p.progress)) {
     migrated[id] = { ...ep, sentenceScores: ep.sentenceScores ?? {} };
   }
-  return { ...p, progress: migrated };
+  return { ...p, handle: p.handle ?? null, progress: migrated };
 }
 
 export function saveProgress(state: PersistedState): void {
@@ -99,22 +99,11 @@ export function getSentences(entry: ConversationEntry) {
   const reasoningIdx = entry.messages.findIndex((m) => m.role === 'reasoning');
   if (reasoningIdx === -1) return [];
 
-  const annotated = entry.annotations
-    .filter((a) => a.message_idx === reasoningIdx)
-    .sort((a, b) => a.char_start - b.char_start);
-
-  if (annotated.length > 0) {
-    return annotated.map((a, i) => ({
-      index: i,
-      text: a.text,
-      char_start: a.char_start,
-      char_end: a.char_end,
-      message_idx: a.message_idx,
-    }));
-  }
-
-  // Fallback: split the raw reasoning text into sentence-like chunks
   const text = entry.messages[reasoningIdx].content;
+
+  // We ignore judge-generated annotations for defining boundaries because they are 
+  // often corrupted (splitting words, inconsistent offsets). Instead, we 
+  // define our own "Gold Standard" segments using a local heuristic splitter.
   return splitReasoningText(text).map((s, i) => ({
     index: i,
     text: s.text,
@@ -125,32 +114,88 @@ export function getSentences(entry: ConversationEntry) {
 }
 
 /**
- * Heuristic sentence splitter for raw reasoning traces (no LLM annotations).
- * Splits on sentence-ending punctuation and newlines, merges very short fragments.
+ * Convert a Unicode code point offset (e.g. from Python) to a JS UTF-16 code unit offset.
+ */
+function codePointToCodeUnitOffset(str: string, cpOffset: number): number {
+  let cuOffset = 0;
+  let cpCount = 0;
+  while (cpCount < cpOffset && cuOffset < str.length) {
+    const cp = str.codePointAt(cuOffset);
+    if (cp === undefined) break;
+    cuOffset += cp > 0xFFFF ? 2 : 1;
+    cpCount++;
+  }
+  return cuOffset;
+}
+
+/**
+ * Convert a JS UTF-16 code unit offset back to a Unicode code point offset.
+ */
+function codeUnitToCodePointOffset(str: string, cuOffset: number): number {
+  let cpCount = 0;
+  let currentCuOffset = 0;
+  while (currentCuOffset < cuOffset && currentCuOffset < str.length) {
+    const cp = str.codePointAt(currentCuOffset);
+    if (cp === undefined) break;
+    currentCuOffset += cp > 0xFFFF ? 2 : 1;
+    cpCount++;
+  }
+  return cpCount;
+}
+
+/**
+ * Robust sentence splitter for reasoning traces.
+ * Splits on sentence-ending punctuation followed by whitespace/newlines.
  */
 function splitReasoningText(text: string): Array<{ text: string; start: number; end: number }> {
   const raw: Array<{ text: string; start: number; end: number }> = [];
 
-  // Match runs of non-sentence-ending, non-newline text, optionally ending in punctuation
-  const re = /[^\n.!?]+[.!?]*/g;
+  // Match: 
+  // 1. A sequence of characters that ends with (. ! ? or :) AND (whitespace or end of string)
+  // OR 
+  // 2. Lines as explicit separators
+  const re = /.*?[.!?:](\s+|$)|[^\n]+(\n|$)/g;
+  
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const t = m[0].trim();
-    if (t.length < 5) continue;
-    // Locate trimmed text within the match (accounts for leading whitespace)
+    if (!t) continue;
+    
     const offset = m[0].indexOf(t);
-    raw.push({ text: t, start: m.index + offset, end: m.index + offset + t.length });
+    raw.push({ 
+      text: t, 
+      start: m.index + offset, 
+      end: m.index + offset + t.length 
+    });
   }
 
-  // Merge fragments shorter than 30 chars into the previous sentence
+  // Merge logical fragments (e.g. "1.", "2.") or very short accidental splits
+  const processing = [...raw];
   const merged: typeof raw = [];
-  for (const seg of raw) {
-    if (merged.length > 0 && merged[merged.length - 1].text.length < 30) {
-      const prev = merged[merged.length - 1];
-      prev.text = prev.text + ' ' + seg.text;
-      prev.end = seg.end;
+  
+  for (let i = 0; i < processing.length; i++) {
+    const current = processing[i];
+
+    // 1. Forward merge: list markers (e.g. "1.", "A.") or tiny fragments
+    // These should belong to the sentence they introduce.
+    if (current.text.length <= 3 && i < processing.length - 1) {
+      processing[i + 1].text = current.text + ' ' + processing[i + 1].text;
+      processing[i + 1].start = current.start;
+      continue;
+    }
+
+    const last = merged[merged.length - 1];
+    // 2. Backward merge: continuation of previous sentence or tiny trailing fragment
+    if (
+      last &&
+      (!/[.!?:]$/.test(last.text) ||
+        /^[a-z,;]/.test(current.text) ||
+        (current.text.length <= 3 && i === processing.length - 1))
+    ) {
+      last.text = (last.text + ' ' + current.text).replace(/\s+/g, ' ').trim();
+      last.end = current.end;
     } else {
-      merged.push({ ...seg });
+      merged.push({ ...current });
     }
   }
 
@@ -172,8 +217,12 @@ export function buildHumanLabeledEntry(
     turning_point: number;
     alignment: string;
   },
+  handle: string,
 ): ConversationEntry {
   const sentences = getSentences(original);
+
+  const reasoningIdx = original.messages.findIndex((m) => m.role === 'reasoning');
+  const reasoningText = reasoningIdx >= 0 ? original.messages[reasoningIdx].content : '';
 
   const annotations = sentences.map((s) => {
     const labels = sentenceLabels[s.index] ?? [];
@@ -183,20 +232,26 @@ export function buildHumanLabeledEntry(
     return {
       text: s.text,
       message_idx: s.message_idx,
-      char_start: s.char_start,
-      char_end: s.char_end,
+      char_start: codeUnitToCodePointOffset(reasoningText, s.char_start),
+      char_end: codeUnitToCodePointOffset(reasoningText, s.char_end),
       labels: resolvedLabels,
       score: safetyScore,
       meta: {},
     };
   });
 
+  const judgeName = `human_${handle}`;
+  let cleanId = original.id;
+  if (cleanId.startsWith('dataset.jsonl:')) {
+    cleanId = cleanId.substring('dataset.jsonl:'.length);
+  }
+
   return {
-    id: original.id,
+    id: cleanId,
     messages: original.messages,
     annotations,
     model: original.model,
-    judge: 'human',
+    judge: judgeName,
     metadata: {
       ...original.metadata,
       assessment: {
@@ -207,7 +262,34 @@ export function buildHumanLabeledEntry(
       has_reasoning: true,
       labeled_at: new Date().toISOString(),
       human_labeled: true,
+      judge_name: judgeName,
     },
+  };
+}
+
+/**
+ * Reconstruct sentenceLabels and sentenceScores maps from an existing human label run.
+ * This ensures that if a user returns to a previously labeled entry, their work is visible.
+ */
+export function reconstructProgress(entry: ConversationEntry, judgeName: string) {
+  const run = entry.label_runs?.find(r => r.judge_name === judgeName);
+  if (!run || !run.spans) return null;
+
+  const sentenceLabels: Record<number, string[]> = {};
+  const sentenceScores: Record<number, number> = {};
+
+  run.spans.forEach((span, idx) => {
+    // We assume the spans in the label run correspond 1:1 with sentences 
+    // generated by getSentences(entry) at the time of labeling.
+    sentenceLabels[idx] = (span.labels || []).filter(l => l !== 'none');
+    sentenceScores[idx] = span.score ?? 0;
+  });
+
+  return {
+    sentenceLabels,
+    sentenceScores,
+    assessment: run.assessment as unknown as import('./types').Assessment,
+    completed: run.status === 'completed'
   };
 }
 
@@ -217,12 +299,13 @@ export function buildHumanLabeledEntry(
 export function exportAsJsonl(
   entries: ConversationEntry[],
   progressMap: Record<string, { sentenceLabels: Record<number, string[]>; sentenceScores: Record<number, number>; assessment?: { trajectory: string; turning_point: number; alignment: string }; completed: boolean }>,
+  handle: string,
 ): string {
   const lines: string[] = [];
   for (const entry of entries) {
     const prog = progressMap[entry.id];
     if (!prog?.completed || !prog.assessment) continue;
-    const humanEntry = buildHumanLabeledEntry(entry, prog.sentenceLabels, prog.sentenceScores ?? {}, prog.assessment);
+    const humanEntry = buildHumanLabeledEntry(entry, prog.sentenceLabels, prog.sentenceScores ?? {}, prog.assessment, handle);
     lines.push(JSON.stringify(humanEntry));
   }
   return lines.join('\n');

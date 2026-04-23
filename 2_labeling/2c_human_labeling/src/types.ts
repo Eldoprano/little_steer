@@ -98,6 +98,8 @@ export interface EntryProgress {
 
 /** App-level persisted state stored in localStorage. */
 export interface PersistedState {
+  /** The unique name/handle for this human labeler. */
+  handle: string | null;
   /** Map from entry id to its labeling progress. */
   progress: Record<string, EntryProgress>;
   /** Which entry the user is currently working on (index into filteredEntries). */

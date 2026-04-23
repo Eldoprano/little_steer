@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { ConversationEntry, Assessment, PersistedState } from './types';
 import {
   saveEntries,
@@ -10,18 +10,25 @@ import {
   clearProgress,
   getSentences,
   filterLabeledEntries,
+  buildHumanLabeledEntry,
+  reconstructProgress,
 } from './store';
 import DataLoader from './components/DataLoader';
 import Labeler from './components/Labeler';
-import AssessmentScreen from './components/AssessmentScreen';
 import StatsView from './components/StatsView';
+import IdentityScreen from './components/IdentityScreen';
 
-type Screen = 'labeling' | 'assessment' | 'stats';
+type Screen = 'labeling' | 'stats';
 
 export default function App() {
   const [entries, setEntries] = useState<ConversationEntry[]>(() => loadEntries() ?? []);
   const [appState, setAppState] = useState<PersistedState>(() => loadProgress());
   const [screen, setScreen] = useState<Screen>('labeling');
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadStatus, setLoadStatus] = useState<string>('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [totalExpectedCount, setTotalExpectedCount] = useState<number>(0);
+  const hasAutoLoaded = useRef(false);
 
   // Persist on every state change
   useEffect(() => {
@@ -37,29 +44,173 @@ export default function App() {
   const sentences = currentEntry ? getSentences(currentEntry) : [];
 
   const completedCount = entries.filter((e) => appState.progress[e.id]?.completed).length;
-  const allEntriesDone = entries.length > 0 && completedCount === entries.length;
+  // User preference: show X/N as "working on the X-th entry"
+  const activeProgressDisplay = completedCount + (currentProgress?.completed ? 0 : 1);
 
-  // Are all sentences in the current entry visited (label committed, even if empty) AND scored?
   const allSentencesLabeled =
     sentences.length > 0 &&
     sentences.every(
       (s) =>
         currentProgress?.sentenceLabels[s.index] !== undefined &&
         currentProgress?.sentenceScores[s.index] !== undefined,
-    ) &&
-    !currentProgress?.completed;
+    );
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
+  const handleSetHandle = useCallback((handle: string) => {
+    setAppState((prev) => ({ ...prev, handle }));
+  }, []);
+
   const handleLoad = useCallback((newEntries: ConversationEntry[]) => {
+    console.log(`[DataLoader] Received ${newEntries.length} entries`);
     setEntries((prev) => {
       const existingIds = new Set(prev.map((e) => e.id));
       const toAdd = newEntries.filter((e) => !existingIds.has(e.id));
       const merged = [...prev, ...toAdd];
-      saveEntries(merged);
+      
+      if (toAdd.length > 0) {
+        console.log(`[DataLoader] Adding ${toAdd.length} new entries to existing ${prev.length}`);
+        saveEntries(merged);
+      }
+
+      setAppState((prevAppState) => {
+        if (!prevAppState.handle) return prevAppState;
+        const newProgress = { ...prevAppState.progress };
+        let changed = false;
+        const judgeName = `human_${prevAppState.handle}`;
+        
+        for (const entry of merged) {
+          if (!newProgress[entry.id]) {
+            const reconstructed = reconstructProgress(entry, judgeName);
+            if (reconstructed) {
+              console.log(`[DataLoader] Reconstructed progress for entry ${entry.id}`);
+              newProgress[entry.id] = reconstructed;
+              changed = true;
+            }
+          }
+        }
+        
+        // Auto-advance if we are at the very beginning and current is done
+        let nextIdx = prevAppState.currentEntryIndex;
+        if (merged.length > 0 && nextIdx < merged.length && newProgress[merged[nextIdx]?.id]?.completed) {
+          while (nextIdx < merged.length && newProgress[merged[nextIdx]?.id]?.completed) {
+            nextIdx++;
+          }
+        }
+
+        if (!changed && prevAppState.currentEntryIndex === nextIdx) {
+          return prevAppState;
+        }
+
+        console.log(`[DataLoader] Updating state. currentIdx: ${nextIdx}, changed: ${changed}`);
+        return { 
+          ...prevAppState, 
+          progress: newProgress, 
+          currentEntryIndex: nextIdx, 
+          currentSentenceIndex: 0 
+        };
+      });
+
       return merged;
     });
   }, []);
+
+  // Optimized auto-load: Fetch from meta and work order directly
+  useEffect(() => {
+    if (appState.handle && entries.length === 0 && !isLoading && !hasAutoLoaded.current) {
+      hasAutoLoaded.current = true;
+      setIsLoading(true);
+      setLoadError(null);
+
+      (async () => {
+        try {
+          console.log('[AutoLoad] Starting initial load...');
+          // 1. Fetch metadata (small files)
+          setLoadStatus('Fetching work order...');
+          const [woResp, metaResp] = await Promise.all([
+            fetch('/api/work-order'),
+            fetch('/api/meta'),
+          ]);
+
+          if (!woResp.ok || !metaResp.ok) throw new Error('Failed to fetch initial metadata');
+
+          const workOrder = await woResp.json();
+          const meta = await metaResp.json();
+          const woMap = new Map<string, number>();
+          workOrder.flat_order.forEach((item: any, i: number) => woMap.set(item.id, i));
+
+          // 2. Identify entries with reasoning that are in the work order
+          const reasoningIds = new Set(
+            meta.entries
+              .filter((e: any) => e.has_reasoning && woMap.has(e.id))
+              .map((e: any) => e.id)
+          );
+
+          if (reasoningIds.size === 0) throw new Error('No reasoning entries found in work order');
+          
+          const sortedIds = workOrder.flat_order
+            .filter((item: any) => reasoningIds.has(item.id))
+            .map((item: any) => item.id);
+
+          setTotalExpectedCount(sortedIds.length);
+          console.log(`[AutoLoad] Identified ${sortedIds.length} reasoning entries in work order`);
+
+          // 3. Find first incomplete entry
+          const judgeName = `human_${appState.handle}`;
+          let firstTargetId = sortedIds[0];
+          for (const id of sortedIds) {
+            const entryMeta = meta.entries.find((e: any) => e.id === id);
+            if (entryMeta && !entryMeta.judges.includes(judgeName)) {
+              firstTargetId = id;
+              break;
+            }
+          }
+
+          // 4. Load the FIRST entry immediately to UNBLOCK the user
+          console.log(`[AutoLoad] Loading first entry: ${firstTargetId}`);
+          setLoadStatus('Loading first entry...');
+          const firstEntryResp = await fetch(`/api/entry/${firstTargetId}`);
+          if (!firstEntryResp.ok) throw new Error(`Failed to load entry ${firstTargetId}`);
+          
+          const firstEntry = await firstEntryResp.json();
+          handleLoad([{ ...firstEntry, id: `dataset.jsonl:${firstEntry.id}` }]);
+
+          // !!! UNBLOCK THE UI HERE !!!
+          setIsLoading(false);
+
+          // 5. Load the next 100 entries in parallel (much faster than fetching whole dataset.jsonl)
+          const remainingIncompleteIds = sortedIds.filter(id => id !== firstTargetId).slice(0, 100);
+          console.log(`[AutoLoad] Background sync: fetching ${remainingIncompleteIds.length} entries...`);
+          setLoadStatus(`Loading queue (${remainingIncompleteIds.length} entries)...`);
+
+          // Batch the requests to avoid overwhelming the server
+          const BATCH_SIZE = 5;
+          for (let i = 0; i < remainingIncompleteIds.length; i += BATCH_SIZE) {
+            const batch = remainingIncompleteIds.slice(i, i + BATCH_SIZE);
+            const batchResults = await Promise.all(
+              batch.map(async id => {
+                try {
+                  const r = await fetch(`/api/entry/${id}`);
+                  if (!r.ok) return null;
+                  const e = await r.json();
+                  return { ...e, id: `dataset.jsonl:${e.id}` };
+                } catch { return null; }
+              })
+            );
+            const valid = batchResults.filter(Boolean) as ConversationEntry[];
+            if (valid.length > 0) handleLoad(valid);
+            setLoadStatus(`Syncing queue... ${Math.min(i + BATCH_SIZE, remainingIncompleteIds.length)}/${remainingIncompleteIds.length}`);
+          }
+          setLoadStatus('');
+
+        } catch (err) {
+          console.error('[AutoLoad] Failed:', err);
+          setLoadError(err instanceof Error ? err.message : String(err));
+          setIsLoading(false); // Make sure to unblock even on error so user sees the error UI
+        }
+      })();
+    }
+  }, [appState.handle, entries.length, isLoading, handleLoad]);
 
   const handleLabelSentence = useCallback(
     (labels: string[]) => {
@@ -112,7 +263,6 @@ export default function App() {
           direction === 'back'
             ? Math.max(0, idx - 1)
             : Math.min(sentences.length - 1, idx + 1);
-        // When advancing forward, commit empty labels if this sentence was never labeled.
         if (direction === 'next') {
           const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
           if (ep.sentenceLabels[idx] === undefined) {
@@ -140,34 +290,66 @@ export default function App() {
   }, []);
 
   const handleSubmitAssessment = useCallback(
-    (assessment: Assessment) => {
-      if (!currentEntry) return;
-      setAppState((prev) => {
-        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, completed: false };
+    async (assessment: Assessment) => {
+      if (!currentEntry || !appState.handle) return;
+      console.log(`[Submit] Submitting assessment for ${currentEntry.id}`);
 
-        // Find the next unlabeled entry
-        let nextIdx = prev.currentEntryIndex + 1;
+      const ep = appState.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+      
+      const labeledEntry = buildHumanLabeledEntry(
+        currentEntry,
+        ep.sentenceLabels,
+        ep.sentenceScores,
+        assessment,
+        appState.handle
+      );
+
+      try {
+        const resp = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(labeledEntry),
+        });
+        if (!resp.ok) console.error('Failed to save to backend');
+      } catch (err) {
+        console.error('Error saving to backend:', err);
+      }
+
+      setAppState((prev) => {
+        const currentEp = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+        const newProgress = {
+          ...prev.progress,
+          [currentEntry.id]: { ...currentEp, assessment, completed: true },
+        };
+
+        // Find the next incomplete entry, starting from the current position
+        let nextIdx = (prev.currentEntryIndex + 1) % entries.length;
+        let checkedCount = 0;
         while (
-          nextIdx < entries.length &&
-          prev.progress[entries[nextIdx]?.id]?.completed
+          checkedCount < entries.length && 
+          newProgress[entries[nextIdx].id]?.completed
         ) {
-          nextIdx++;
+          nextIdx = (nextIdx + 1) % entries.length;
+          checkedCount++;
         }
-        if (nextIdx >= entries.length) nextIdx = prev.currentEntryIndex;
+
+        if (checkedCount === entries.length) {
+          console.log('[Submit] All entries completed!');
+          nextIdx = entries.length; // Signal all done
+        } else {
+          console.log(`[Submit] Moving to next entry index: ${nextIdx}`);
+        }
 
         return {
           ...prev,
           currentEntryIndex: nextIdx,
           currentSentenceIndex: 0,
-          progress: {
-            ...prev.progress,
-            [currentEntry.id]: { ...ep, assessment, completed: true },
-          },
+          progress: newProgress,
         };
       });
       setScreen('labeling');
     },
-    [currentEntry, entries],
+    [currentEntry, entries, appState.handle, appState.progress],
   );
 
   const handleReset = useCallback(() => {
@@ -184,115 +366,146 @@ export default function App() {
     setScreen('labeling');
   }, []);
 
+  const handleSelectEntry = useCallback((idx: number) => {
+    setAppState((prev) => ({ ...prev, currentEntryIndex: idx, currentSentenceIndex: 0 }));
+    setScreen('labeling');
+  }, []);
+
   // ── Routing ───────────────────────────────────────────────────────────────
 
-  // No data loaded
-  if (entries.length === 0) {
-    return <DataLoader onLoad={handleLoad} />;
+  if (!appState.handle) {
+    return <IdentityScreen onSetHandle={handleSetHandle} />;
   }
 
-  // Stats overlay renders on top of the labeler
-  if (screen === 'stats') {
+  if (isLoading || (appState.handle && entries.length === 0)) {
     return (
-      <>
-        {currentEntry ? (
-          <Labeler
-            entry={currentEntry}
-            entryIndex={appState.currentEntryIndex}
-            totalEntries={entries.length}
-            completedCount={completedCount}
-            sentenceIndex={appState.currentSentenceIndex}
-            sentenceLabels={currentProgress?.sentenceLabels ?? {}}
-            sentenceScores={currentProgress?.sentenceScores ?? {}}
-            onLabelSentence={handleLabelSentence}
-            onScoreSentence={handleScoreSentence}
-            onNavigate={handleNavigate}
-            onJumpToSentence={handleJump}
-            onShowAssessment={() => setScreen('assessment')}
-            onShowStats={() => {}}
-            allDone={allSentencesLabeled}
-          />
+      <div style={{
+        height: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#2D353B',
+        gap: '20px',
+        padding: '24px',
+        textAlign: 'center'
+      }}>
+        {loadError ? (
+          <>
+            <div style={{ color: '#E67E80', fontSize: '14px', maxWidth: '400px', lineHeight: 1.5 }}>
+              <strong>Error loading data:</strong><br />
+              {loadError}
+            </div>
+            <button
+              onClick={() => {
+                hasAutoLoaded.current = false;
+                setAppState(prev => ({ ...prev, handle: null }));
+              }}
+              style={{
+                background: '#A7C080',
+                border: 'none',
+                borderRadius: '8px',
+                padding: '10px 20px',
+                color: '#2D353B',
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              ← Back to Name Selection
+            </button>
+          </>
         ) : (
-          <AllDoneScreen
-            completedCount={completedCount}
-            total={entries.length}
-            onShowStats={() => {}}
-            onLoadMore={handleLoad}
-          />
+          <>
+            <div className="spinner" style={{
+              width: '24px',
+              height: '24px',
+              border: '3px solid #475258',
+              borderTopColor: '#A7C080',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite'
+            }} />
+            <div style={{ color: '#7A8478', fontSize: '14px' }}>
+              {loadStatus || 'Preparing labeling queue...'}
+            </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </>
         )}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {currentEntry ? (
+        <Labeler
+          entry={currentEntry}
+          entryIndex={appState.currentEntryIndex}
+          totalEntries={totalExpectedCount || entries.length}
+          completedCount={activeProgressDisplay}
+          sentenceIndex={appState.currentSentenceIndex}
+          sentenceLabels={currentProgress?.sentenceLabels ?? {}}
+          sentenceScores={currentProgress?.sentenceScores ?? {}}
+          currentProgress={currentProgress}
+          onLabelSentence={handleLabelSentence}
+          onScoreSentence={handleScoreSentence}
+          onNavigate={handleNavigate}
+          onJumpToSentence={handleJump}
+          onSubmitAssessment={handleSubmitAssessment}
+          onShowStats={() => setScreen('stats')}
+          allDone={allSentencesLabeled}
+        />
+      ) : (
+        <AllDoneScreen
+          completedCount={completedCount}
+          total={totalExpectedCount || entries.length}
+          onShowStats={() => setScreen('stats')}
+          onLoadMore={handleLoad}
+        />
+      )}
+
+      {screen === 'stats' && (
         <StatsView
           entries={entries}
           state={appState}
           onClose={() => setScreen('labeling')}
           onReset={handleReset}
           onClearData={handleClearAll}
+          onSelectEntry={handleSelectEntry}
         />
-      </>
-    );
-  }
+      )}
 
-  // Assessment screen
-  if (screen === 'assessment' && currentEntry) {
-    return (
-      <AssessmentScreen
-        entry={currentEntry}
-        existing={currentProgress?.assessment}
-        onSubmit={handleSubmitAssessment}
-        onBack={() => setScreen('labeling')}
-      />
-    );
-  }
-
-  // All done
-  if (allEntriesDone) {
-    return (
-      <>
-        <AllDoneScreen
-          completedCount={completedCount}
-          total={entries.length}
-          onShowStats={() => setScreen('stats')}
-          onLoadMore={handleLoad}
-        />
-        {(screen as string) === 'stats' && (
-          <StatsView
-            entries={entries}
-            state={appState}
-            onClose={() => setScreen('labeling')}
-            onReset={handleReset}
-            onClearData={handleClearAll}
-          />
-        )}
-      </>
-    );
-  }
-
-  // Labeling screen (guard: ensure currentEntry exists)
-  if (!currentEntry) {
-    // Shouldn't happen, but find first incomplete entry
-    const firstIncomplete = entries.findIndex((e) => !appState.progress[e.id]?.completed);
-    if (firstIncomplete !== -1) {
-      setAppState((prev) => ({ ...prev, currentEntryIndex: firstIncomplete, currentSentenceIndex: 0 }));
-    }
-    return null;
-  }
-
-  return (
-    <Labeler
-      entry={currentEntry}
-      entryIndex={appState.currentEntryIndex}
-      totalEntries={entries.length}
-      completedCount={completedCount}
-      sentenceIndex={appState.currentSentenceIndex}
-      sentenceLabels={currentProgress?.sentenceLabels ?? {}}
-      sentenceScores={currentProgress?.sentenceScores ?? {}}
-      onLabelSentence={handleLabelSentence}
-      onScoreSentence={handleScoreSentence}
-      onNavigate={handleNavigate}
-      onJumpToSentence={handleJump}
-      onShowAssessment={() => setScreen('assessment')}
-      onShowStats={() => setScreen('stats')}
-      allDone={allSentencesLabeled}
-    />
+      {/* Optional: Background sync progress indicator */}
+      {loadStatus && (
+        <div style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          background: '#343F44',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          color: '#7A8478',
+          fontSize: '11px',
+          border: '1px solid #475258',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px'
+        }}>
+          <div className="spinner-small" style={{
+            width: '10px',
+            height: '10px',
+            border: '2px solid #475258',
+            borderTopColor: '#A7C080',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <span>{loadStatus}</span>
+          <style>{`
+            @keyframes spin { to { transform: rotate(360deg); } }
+          `}</style>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -329,7 +542,7 @@ function AllDoneScreen({
           All {total} responses labeled!
         </h1>
         <p style={{ color: '#7A8478', fontSize: '14px', marginTop: '8px' }}>
-          Great work. Export your labels or load more files to continue.
+          Great work. Your labels were saved to dataset.jsonl.
         </p>
       </div>
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Assessment, TrajectoryType, AlignmentType, ConversationEntry } from '../types';
 import { TRAJECTORY_OPTIONS, ALIGNMENT_OPTIONS } from '../taxonomy';
 import { getSentences } from '../store';
@@ -84,6 +84,59 @@ function DescTooltip({ text, onClose }: { text: string; onClose: () => void }) {
   );
 }
 
+// ── Hover tooltip (skimmable) ───────────────────────────────────────────────
+
+function HoverTooltip({ text, rect }: { text: string; rect: DOMRect }) {
+  const [pos, setPos] = useState({ top: 0, left: 0, opacity: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const tt = ref.current.getBoundingClientRect();
+    
+    let top = rect.bottom + 8;
+    let left = rect.left;
+
+    if (left + tt.width > window.innerWidth - 12) {
+      left = window.innerWidth - tt.width - 12;
+    }
+    if (left < 12) left = 12;
+
+    if (top + tt.height > window.innerHeight - 12) {
+      top = rect.top - tt.height - 8;
+    }
+
+    setPos({ top, left, opacity: 1 });
+  }, [rect, text]);
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: 'fixed',
+        top: pos.top,
+        left: pos.left,
+        opacity: pos.opacity,
+        pointerEvents: 'none',
+        zIndex: 1000,
+        background: '#343F44',
+        border: '1px solid #475258',
+        borderRadius: '8px',
+        padding: '10px 14px',
+        maxWidth: '320px',
+        color: '#D3C6AA',
+        fontSize: '12px',
+        lineHeight: '1.5',
+        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+        whiteSpace: 'pre-wrap',
+        transition: 'opacity 0.05s',
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
 // ── Option pill button with long-press ────────────────────────────────────────
 
 function OptionButton<T extends string>({
@@ -91,20 +144,25 @@ function OptionButton<T extends string>({
   selected,
   onSelect,
   onDescRequest,
+  onHover,
 }: {
   option: { value: T; label: string; description: string };
   selected: boolean;
   onSelect: (v: T) => void;
   onDescRequest: (text: string) => void;
+  onHover: (text: string | null, rect?: DOMRect) => void;
 }) {
+  const desc = `${option.label}\n\n${option.description}`;
   const longPress = useLongPress(() => {
-    onDescRequest(`${option.label}\n\n${option.description}`);
+    onDescRequest(desc);
   });
 
   return (
     <button
       onClick={() => onSelect(option.value)}
+      onMouseEnter={(e) => onHover(desc, e.currentTarget.getBoundingClientRect())}
       {...longPress}
+      onMouseLeave={() => { onHover(null); longPress.onMouseLeave(); }}
       style={{
         minHeight: '44px',
         padding: '8px 16px',
@@ -238,6 +296,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
   const [turningPoint, setTurningPoint] = useState<number>(existing?.turning_point ?? -1);
   const [alignment, setAlignment] = useState<AlignmentType>(existing?.alignment ?? 'aligned');
   const [descTooltip, setDescTooltip] = useState<string | null>(null);
+  const [hoverTooltip, setHoverTooltip] = useState<{ text: string; rect: DOMRect } | null>(null);
 
   const canSubmit = trajectory !== null && alignment !== null;
 
@@ -335,6 +394,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
                   selected={trajectory === opt.value}
                   onSelect={setTrajectory}
                   onDescRequest={(text) => setDescTooltip(text)}
+                  onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
                 />
               ))}
             </div>
@@ -356,6 +416,7 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
                   selected={alignment === opt.value}
                   onSelect={setAlignment}
                   onDescRequest={(text) => setDescTooltip(text)}
+                  onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
                 />
               ))}
             </div>
@@ -451,6 +512,10 @@ export default function AssessmentScreen({ entry, existing, onSubmit, onBack }: 
 
       {descTooltip && (
         <DescTooltip text={descTooltip} onClose={() => setDescTooltip(null)} />
+      )}
+
+      {hoverTooltip && !descTooltip && (
+        <HoverTooltip text={hoverTooltip.text} rect={hoverTooltip.rect} />
       )}
     </div>
   );

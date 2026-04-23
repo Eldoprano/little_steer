@@ -304,7 +304,7 @@ export default function DataLoader({ onLoad }: Props) {
   // Sample pool: 'judges' = only entries with at least one LLM judge label; 'all' = all with reasoning
   const [sampleMode, setSampleMode] = useState<'judges' | 'all'>('judges');
   // Work order: sort entries by flat_order from work_order.json
-  const [useWorkOrder, setUseWorkOrder] = useState(false);
+  const [useWorkOrder, setUseWorkOrder] = useState(true);
   // Map from entry ID → position in flat_order (loaded lazily)
   const workOrderMap = useRef<Map<string, number> | null>(null);
   const [workOrderLoaded, setWorkOrderLoaded] = useState(false);
@@ -416,10 +416,9 @@ export default function DataLoader({ onLoad }: Props) {
   [poolForModels, selModels]);
 
   // All filtered entries are loadable:
-  // - entries with files[] → loaded from 2b_labeled (LLM sentence splits)
-  // - entries without files[] → loaded from 1_generated (heuristic sentence split)
+  // - entries with files[] → loaded from dataset.jsonl
   const loadable = filtered;
-  const nWithLLMSplits = useMemo(() => loadable.filter(e => e.files.length > 0).length, [loadable]);
+  const nWithLLMSplits = useMemo(() => loadable.filter(e => e.judges.length > 0).length, [loadable]);
   const nRaw = loadable.length - nWithLLMSplits;
 
   // Distribution for chart
@@ -450,56 +449,17 @@ export default function DataLoader({ onLoad }: Props) {
       const allEntries: ConversationEntry[] = [];
       const seenUids = new Set<string>();
 
-      // Entries with LLM labels → fetch from 2b_labeled/ grouped by labeled file
-      const labeledGroup = loadable.filter(e => e.files.length > 0);
-      if (labeledGroup.length > 0) {
-        // Group metas by the labeled file we'll load them from
-        const fileToMetas = new Map<string, EntryMeta[]>();
-        for (const meta of labeledGroup) {
-          const file = meta.files[0];
-          if (!fileToMetas.has(file)) fileToMetas.set(file, []);
-          fileToMetas.get(file)!.push(meta);
-        }
-        const results = await Promise.all([...fileToMetas.entries()].map(async ([file, metas]) => {
-          const resp = await fetch(`/api/data/${encodeURIComponent(file)}`);
-          if (!resp.ok) throw new Error(`Failed to fetch ${file} (HTTP ${resp.status})`);
-          const text = await resp.text();
-          return { metas, text };
-        }));
-        for (const { metas, text } of results) {
-          // Map original prompt id → uid for this file's entries
-          const idToUid = new Map(metas.map(m => [m.id, m.uid]));
-          for (const entry of parseJsonl(text)) {
-            const uid = idToUid.get(entry.id);
-            if (!uid || seenUids.has(uid)) continue;
-            seenUids.add(uid);
-            allEntries.push({ ...entry, id: uid }); // replace id with uid so tracking is unique per model
-          }
-        }
-      }
-
-      // Entries without LLM labels → fetch raw from 1_generated/ grouped by source file
-      const rawGroup = loadable.filter(e => e.files.length === 0);
-      if (rawGroup.length > 0) {
-        const fileToMetas = new Map<string, EntryMeta[]>();
-        for (const meta of rawGroup) {
-          if (!fileToMetas.has(meta.source_file)) fileToMetas.set(meta.source_file, []);
-          fileToMetas.get(meta.source_file)!.push(meta);
-        }
-        const results = await Promise.all([...fileToMetas.entries()].map(async ([file, metas]) => {
-          const resp = await fetch(`/api/gen-data/${encodeURIComponent(file)}`);
-          if (!resp.ok) throw new Error(`Failed to fetch ${file} (HTTP ${resp.status})`);
-          const text = await resp.text();
-          return { metas, text };
-        }));
-        for (const { metas, text } of results) {
-          const idToUid = new Map(metas.map(m => [m.id, m.uid]));
-          for (const entry of parseJsonl(text)) {
-            const uid = idToUid.get(entry.id);
-            if (!uid || seenUids.has(uid)) continue;
-            seenUids.add(uid);
-            allEntries.push({ ...entry, id: uid });
-          }
+      // In the new world, everything comes from dataset.jsonl
+      const resp = await fetch('/api/data/dataset.jsonl');
+      if (!resp.ok) throw new Error('Failed to fetch dataset.jsonl');
+      const text = await resp.text();
+      
+      const loadableIds = new Set(loadable.map(e => e.id));
+      for (const entry of parseJsonl(text)) {
+        if (loadableIds.has(entry.id) && !seenUids.has(entry.id)) {
+          seenUids.add(entry.id);
+          // Keep uid consistent with DataLoader's expectation
+          allEntries.push({ ...entry, id: `dataset.jsonl:${entry.id}` });
         }
       }
 
@@ -517,7 +477,7 @@ export default function DataLoader({ onLoad }: Props) {
         const woMap = workOrderMap.current;
         const MAX_POS = 999999;
         withReasoning = [...withReasoning].sort((a, b) => {
-          // uid = "source_file:original_id" — extract original id for work-order lookup
+          // id = "dataset.jsonl:original_id" — extract original id for work-order lookup
           const aOrigId = a.id.slice(a.id.indexOf(':') + 1);
           const bOrigId = b.id.slice(b.id.indexOf(':') + 1);
           const pa = woMap.get(aOrigId) ?? MAX_POS;

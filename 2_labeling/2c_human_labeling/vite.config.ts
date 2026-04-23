@@ -3,18 +3,17 @@ import react from '@vitejs/plugin-react'
 import fs from 'fs'
 import path from 'path'
 
-const GEN_DIR = path.resolve(__dirname, '../../data/1_generated')
-const LABELED_DIR = path.resolve(__dirname, '../../data/2b_labeled/v5')
+const DATASET_PATH = path.resolve(__dirname, '../../data/dataset.jsonl')
 const WORK_ORDER_PATH = path.resolve(__dirname, '../2b_sentence/work_order.json')
 
 interface EntryMeta {
-  id: string         // original prompt ID (shared across models)
-  uid: string        // globally unique: source_file + ':' + id
+  id: string
+  uid: string
   model: string
   dataset: string
   judges: string[]
-  files: string[]        // filenames in LABELED_DIR that contain this entry
-  source_file: string    // filename in GEN_DIR where this entry originated
+  files: string[]
+  source_file: string
   has_reasoning: boolean
 }
 
@@ -26,73 +25,45 @@ interface MetaIndex {
 let metaCache: MetaIndex | null = null
 
 function buildMeta(): MetaIndex {
-  // Key: uid = source_file + ':' + id  →  each (model, prompt) pair is distinct
   const entries = new Map<string, EntryMeta>()
 
-  // Scan 1_generated — every (file, entry) combo gets its own record
-  const sourceFiles: string[] = []
-  if (fs.existsSync(GEN_DIR)) {
-    for (const file of fs.readdirSync(GEN_DIR).sort()) {
-      if (!file.endsWith('.jsonl')) continue
-      sourceFiles.push(file)
-      const content = fs.readFileSync(path.join(GEN_DIR, file), 'utf-8')
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const e = JSON.parse(line)
-          if (!e.id) continue
-          const uid = `${file}:${e.id}`
-          if (entries.has(uid)) continue  // dedup within same file only
-          const m = e.metadata || {}
-          const hasReasoning =
-            Boolean(m.has_reasoning) ||
-            (Array.isArray(e.messages) && e.messages.some((msg: { role: string }) => msg.role === 'reasoning'))
-          entries.set(uid, {
-            id: e.id,
-            uid,
-            model: m.model_name || 'unknown',
-            dataset: m.dataset_name || 'unknown',
-            judges: [],
-            files: [],
-            source_file: file,
-            has_reasoning: hasReasoning,
-          })
-        } catch {}
-      }
-    }
-  }
-
-  // Scan 2b_labeled — match each labeled file back to its source file in GEN_DIR.
-  // Labeled filenames follow the pattern: {source_without_ext}_{judge}.jsonl
-  // We find the source by looking for the longest known source prefix.
-  if (fs.existsSync(LABELED_DIR)) {
-    for (const file of fs.readdirSync(LABELED_DIR).sort()) {
-      if (!file.endsWith('.jsonl')) continue
-      const fileBase = file.slice(0, -6)
-
-      let sourceFile = ''
-      for (const sf of sourceFiles) {
-        const sfBase = sf.slice(0, -6)
-        if ((fileBase === sfBase || fileBase.startsWith(sfBase + '_')) && sfBase.length > sourceFile.length) {
-          sourceFile = sf
+  if (fs.existsSync(DATASET_PATH)) {
+    const content = fs.readFileSync(DATASET_PATH, 'utf-8')
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const e = JSON.parse(line)
+        if (!e.id) continue
+        
+        const m = e.metadata || {}
+        const hasReasoning =
+          Boolean(m.has_reasoning) ||
+          (Array.isArray(e.messages) && e.messages.some((msg: { role: string }) => msg.role === 'reasoning'))
+        
+        const judges: string[] = []
+        if (Array.isArray(e.label_runs)) {
+          for (const run of e.label_runs) {
+            if (run.judge_name && !judges.includes(run.judge_name)) {
+              judges.push(run.judge_name)
+            }
+          }
         }
-      }
-      if (!sourceFile) continue
+        // Also check legacy judge field
+        if (e.judge && !judges.includes(e.judge)) judges.push(e.judge)
+        if (m.judge_name && !judges.includes(m.judge_name)) judges.push(m.judge_name)
 
-      const content = fs.readFileSync(path.join(LABELED_DIR, file), 'utf-8')
-      for (const line of content.split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const e = JSON.parse(line)
-          if (!e.id) continue
-          const uid = `${sourceFile}:${e.id}`
-          const meta = entries.get(uid)
-          if (!meta) continue
-          const judge = e.metadata?.judge_name || e.judge || ''
-          if (judge && !meta.judges.includes(judge)) meta.judges.push(judge)
-          if (!meta.files.includes(file)) meta.files.push(file)
-        } catch {}
-      }
+        const uid = `dataset.jsonl:${e.id}`
+        entries.set(uid, {
+          id: e.id,
+          uid,
+          model: e.model || m.model_name || 'unknown',
+          dataset: m.dataset_name || 'unknown',
+          judges,
+          files: ['dataset.jsonl'],
+          source_file: 'dataset.jsonl',
+          has_reasoning: hasReasoning,
+        })
+      } catch {}
     }
   }
 
@@ -124,23 +95,18 @@ export default defineConfig({
             return
           }
 
-          // GET /api/meta/refresh → force rebuild
-          if (url === '/api/meta/refresh') {
+          // GET /api/humans → list of human labeler tags
+          if (url === '/api/humans') {
             try {
-              metaCache = buildMeta()
+              if (!metaCache) metaCache = buildMeta()
+              const humans = new Set<string>()
+              for (const e of metaCache.entries) {
+                for (const j of e.judges) {
+                  if (j.startsWith('human_')) humans.add(j)
+                }
+              }
               res.setHeader('Content-Type', 'application/json')
-              res.end(JSON.stringify({
-                ok: true,
-                built_at: metaCache.built_at,
-                count: metaCache.entries.length,
-                debug: {
-                  gen_dir: GEN_DIR,
-                  labeled_dir: LABELED_DIR,
-                  gen_dir_exists: fs.existsSync(GEN_DIR),
-                  labeled_dir_exists: fs.existsSync(LABELED_DIR),
-                  gen_files: fs.existsSync(GEN_DIR) ? fs.readdirSync(GEN_DIR).filter(f => f.endsWith('.jsonl')).length : 0,
-                },
-              }))
+              res.end(JSON.stringify([...humans].sort()))
             } catch (err) {
               res.statusCode = 500
               res.end(JSON.stringify({ error: String(err) }))
@@ -148,41 +114,81 @@ export default defineConfig({
             return
           }
 
-          // GET /api/gen-data/<filename> → serve raw entry from GEN_DIR
-          if (url.startsWith('/api/gen-data/')) {
-            const filename = decodeURIComponent(url.slice('/api/gen-data/'.length))
-            if (!filename || !filename.endsWith('.jsonl') || filename.includes('..')) {
-              res.statusCode = 400
-              res.end(JSON.stringify({ error: 'Invalid filename' }))
-              return
-            }
-            const filePath = path.join(GEN_DIR, filename)
-            if (!fs.existsSync(filePath)) {
-              res.statusCode = 404
-              res.end(JSON.stringify({ error: 'File not found' }))
-              return
-            }
-            res.setHeader('Content-Type', 'application/x-ndjson')
-            fs.createReadStream(filePath).pipe(res)
+          // POST /api/save → save human label run
+          if (url === '/api/save' && req.method === 'POST') {
+            let body = ''
+            req.on('data', chunk => { body += chunk })
+            req.on('end', () => {
+              try {
+                const labelRunEntry = JSON.parse(body)
+                let id = labelRunEntry.id
+                if (!id) throw new Error('Missing ID')
+
+                // Strip the "dataset.jsonl:" prefix if it exists to match the original dataset ID
+                if (id.startsWith('dataset.jsonl:')) {
+                  id = id.substring('dataset.jsonl:'.length)
+                }
+
+                // 1. Read entire dataset
+                const content = fs.readFileSync(DATASET_PATH, 'utf-8')
+                const lines = content.split('\n')
+                let found = false
+                
+                const newLines = lines.map(line => {
+                  if (!line.trim()) return line
+                  try {
+                    const e = JSON.parse(line)
+                    if (e.id === id) {
+                      found = true
+                      // Append to label_runs
+                      if (!e.label_runs) e.label_runs = []
+                      
+                      // Convert the flat human label entry back to a LabelRun structure
+                      const newRun = {
+                        judge_name: labelRunEntry.judge,
+                        judge_model_id: 'human',
+                        taxonomy_version: labelRunEntry.metadata.taxonomy_version || 'v6',
+                        labeled_at: labelRunEntry.metadata.labeled_at,
+                        generation_hash: e.generation_hash || '',
+                        reasoning_truncated: false,
+                        assessment: labelRunEntry.metadata.assessment,
+                        spans: labelRunEntry.annotations,
+                        status: 'completed'
+                      }
+                      
+                      // Remove existing run from same human if any (overwrite)
+                      e.label_runs = e.label_runs.filter((r: any) => r.judge_name !== newRun.judge_name)
+                      e.label_runs.push(newRun)
+                      return JSON.stringify(e)
+                    }
+                  } catch {}
+                  return line
+                })
+
+                if (!found) throw new Error(`Entry ${id} not found in dataset`)
+
+                fs.writeFileSync(DATASET_PATH, newLines.join('\n'), 'utf-8')
+                metaCache = null // Invalidate cache
+                
+                res.setHeader('Content-Type', 'application/json')
+                res.end(JSON.stringify({ ok: true }))
+              } catch (err) {
+                res.statusCode = 500
+                res.end(JSON.stringify({ error: String(err) }))
+              }
+            })
             return
           }
 
-          // GET /api/data/<filename> → serve from LABELED_DIR
-          if (url.startsWith('/api/data/')) {
-            const filename = decodeURIComponent(url.slice('/api/data/'.length))
-            if (!filename || !filename.endsWith('.jsonl') || filename.includes('..')) {
-              res.statusCode = 400
-              res.end(JSON.stringify({ error: 'Invalid filename' }))
-              return
-            }
-            const filePath = path.join(LABELED_DIR, filename)
-            if (!fs.existsSync(filePath)) {
+          // GET /api/data/dataset.jsonl → serve dataset.jsonl
+          if (url === '/api/data/dataset.jsonl' || url === '/api/gen-data/dataset.jsonl') {
+            if (!fs.existsSync(DATASET_PATH)) {
               res.statusCode = 404
-              res.end(JSON.stringify({ error: 'File not found' }))
+              res.end(JSON.stringify({ error: 'dataset.jsonl not found' }))
               return
             }
             res.setHeader('Content-Type', 'application/x-ndjson')
-            fs.createReadStream(filePath).pipe(res)
+            fs.createReadStream(DATASET_PATH).pipe(res)
             return
           }
 
@@ -198,17 +204,37 @@ export default defineConfig({
             return
           }
 
-          // GET /api/files → backward-compat file list
-          if (url === '/api/files') {
+          // GET /api/entry/:id → fetch a single entry from dataset.jsonl
+          if (url.startsWith('/api/entry/')) {
+            const id = url.replace('/api/entry/', '')
+            if (!id) {
+              res.statusCode = 400
+              res.end(JSON.stringify({ error: 'Missing ID' }))
+              return
+            }
+
             try {
-              const files = fs.existsSync(LABELED_DIR)
-                ? fs.readdirSync(LABELED_DIR).filter(f => f.endsWith('.jsonl')).sort()
-                : []
+              const content = fs.readFileSync(DATASET_PATH, 'utf-8')
+              const lines = content.split('\n')
+              const line = lines.find(l => {
+                if (!l.trim()) return false
+                try {
+                  const e = JSON.parse(l)
+                  return e.id === id
+                } catch { return false }
+              })
+
+              if (!line) {
+                res.statusCode = 404
+                res.end(JSON.stringify({ error: 'Entry not found' }))
+                return
+              }
+
               res.setHeader('Content-Type', 'application/json')
-              res.end(JSON.stringify(files))
-            } catch {
+              res.end(line)
+            } catch (err) {
               res.statusCode = 500
-              res.end(JSON.stringify({ error: 'Could not read data directory' }))
+              res.end(JSON.stringify({ error: String(err) }))
             }
             return
           }
@@ -225,16 +251,12 @@ export default defineConfig({
     allowedHosts: true,
     cors: true,
     fs: {
-      // Allow imports from the shared 2_labeling/ directory (e.g. taxonomy.json)
       allow: [path.resolve(__dirname, '../../')],
     },
-    // Disable HMR WebSocket to prevent page reloads through Cloudflare tunnel
     hmr: false,
     watch: {
-      // Exclude large data dirs from file watching to avoid spurious restarts
       ignored: [
         `${path.resolve(__dirname, '../../data')}/**`,
-        `${path.resolve(__dirname, '../../.stfolder')}/**`,
         `${path.resolve(__dirname, '../2b_sentence')}/**`,
       ],
     },
