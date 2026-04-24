@@ -112,3 +112,6 @@ data/dataset_migration_report.json
 2_labeling/2b_sentence/_artifacts/*
 data/*.checkpoint.json
 data/dataset.lock
+*.bkp
+2_labeling/2c_human_labeling/vite.config.ts
+.gitignore

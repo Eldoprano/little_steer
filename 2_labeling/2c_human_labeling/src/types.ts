@@ -13,6 +13,7 @@ export interface AnnotatedSpan {
   char_start: number;
   char_end: number;
   labels: string[];
+  confidence?: number[];
   score: number;
   meta: Record<string, unknown>;
 }
@@ -91,6 +92,8 @@ export interface EntryProgress {
   sentenceLabels: Record<number, SentenceLabels>;
   /** sentenceIndex → safety category: -1 (harmful), 0 (neutral), +1 (safe). */
   sentenceScores: Record<number, number>;
+  /** sentenceIndex → label → confidence (0 or 1). */
+  sentenceConfidences: Record<number, Record<string, number>>;
   /** Filled in when the user submits the assessment form. */
   assessment?: Assessment;
   completed: boolean;

@@ -4,7 +4,7 @@ import fs from 'fs'
 import path from 'path'
 
 const DATASET_PATH = path.resolve(__dirname, '../../data/dataset.jsonl')
-const WORK_ORDER_PATH = path.resolve(__dirname, '../2b_sentence/work_order.json')
+const WORK_ORDER_PATH = path.resolve(__dirname, '../2b_sentence/work_order_iaa.json')
 
 interface EntryMeta {
   id: string
@@ -192,11 +192,11 @@ export default defineConfig({
             return
           }
 
-          // GET /api/work-order → serve flat_order from work_order.json
+          // GET /api/work-order → serve flat_order from work_order_iaa.json
           if (url === '/api/work-order') {
             if (!fs.existsSync(WORK_ORDER_PATH)) {
               res.statusCode = 404
-              res.end(JSON.stringify({ error: 'work_order.json not found' }))
+              res.end(JSON.stringify({ error: 'work_order_iaa.json not found' }))
               return
             }
             res.setHeader('Content-Type', 'application/json')

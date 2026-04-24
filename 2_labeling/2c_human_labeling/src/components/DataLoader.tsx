@@ -303,7 +303,7 @@ export default function DataLoader({ onLoad }: Props) {
 
   // Sample pool: 'judges' = only entries with at least one LLM judge label; 'all' = all with reasoning
   const [sampleMode, setSampleMode] = useState<'judges' | 'all'>('judges');
-  // Work order: sort entries by flat_order from work_order.json
+  // Work order: sort entries by flat_order from work_order_iaa.json
   const [useWorkOrder, setUseWorkOrder] = useState(true);
   // Map from entry ID → position in flat_order (loaded lazily)
   const workOrderMap = useRef<Map<string, number> | null>(null);
@@ -556,7 +556,7 @@ export default function DataLoader({ onLoad }: Props) {
             />
             <ToggleRow
               label="Work order"
-              description="Sort entries by the breadth-first sampling order from work_order.json."
+              description="Sort entries by the breadth-first sampling order from work_order_iaa.json."
               enabled={useWorkOrder}
               onChange={v => {
                 setUseWorkOrder(v);

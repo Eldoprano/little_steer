@@ -81,6 +81,9 @@ class SentenceAnnotation(BaseModel):
     text: str
     labels: list[str]
     safety_score: int
+    label_logprobs: dict[str, list[float]] | None = None
+    # key = label string (e.g. "I_REFUSAL"), value = per-token logprobs covering that label in the
+    # JSON output. Raw values — caller decides aggregation (min/mean/max) later.
 
     @field_validator("labels", mode="before")
     @classmethod
@@ -191,6 +194,7 @@ class JudgeConfig(BaseModel):
     rpm: int | None = None  # requests per minute limit for this judge; null = no limit
     rpd: int | None = None  # requests per day limit for this judge; null = no limit
     extra_body: dict | None = None  # extra fields merged into the API request body (e.g. OpenRouter transforms)
+    logprobs: bool = False  # request token log-probabilities; only effective for OpenAI standard models
 
 
 class PipelineConfig(BaseModel):

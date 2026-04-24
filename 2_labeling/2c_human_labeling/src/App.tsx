@@ -39,7 +39,12 @@ export default function App() {
 
   const currentEntry = entries[appState.currentEntryIndex] ?? null;
   const currentProgress = currentEntry
-    ? (appState.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false })
+    ? (appState.progress[currentEntry.id] ?? { 
+        sentenceLabels: {}, 
+        sentenceScores: {}, 
+        sentenceConfidences: {},
+        completed: false 
+      })
     : null;
   const sentences = currentEntry ? getSentences(currentEntry) : [];
 
@@ -217,7 +222,12 @@ export default function App() {
       if (!currentEntry) return;
       const sentIdx = appState.currentSentenceIndex;
       setAppState((prev) => {
-        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+        const ep = prev.progress[currentEntry.id] ?? { 
+          sentenceLabels: {}, 
+          sentenceScores: {}, 
+          sentenceConfidences: {},
+          completed: false 
+        };
         return {
           ...prev,
           progress: {
@@ -233,12 +243,50 @@ export default function App() {
     [currentEntry, appState.currentSentenceIndex],
   );
 
+  const handleToggleConfidence = useCallback(
+    (label: string) => {
+      if (!currentEntry) return;
+      const sentIdx = appState.currentSentenceIndex;
+      setAppState((prev) => {
+        const ep = prev.progress[currentEntry.id] ?? { 
+          sentenceLabels: {}, 
+          sentenceScores: {}, 
+          sentenceConfidences: {},
+          completed: false 
+        };
+        const currentConfMap = ep.sentenceConfidences?.[sentIdx] ?? {};
+        const currentVal = currentConfMap[label] ?? 1;
+        const newVal = currentVal === 1 ? 0 : 1;
+        
+        return {
+          ...prev,
+          progress: {
+            ...prev.progress,
+            [currentEntry.id]: {
+              ...ep,
+              sentenceConfidences: {
+                ...ep.sentenceConfidences,
+                [sentIdx]: { ...currentConfMap, [label]: newVal }
+              }
+            }
+          }
+        };
+      });
+    },
+    [currentEntry, appState.currentSentenceIndex]
+  );
+
   const handleScoreSentence = useCallback(
     (score: number) => {
       if (!currentEntry) return;
       const sentIdx = appState.currentSentenceIndex;
       setAppState((prev) => {
-        const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+        const ep = prev.progress[currentEntry.id] ?? { 
+          sentenceLabels: {}, 
+          sentenceScores: {}, 
+          sentenceConfidences: {},
+          completed: false 
+        };
         return {
           ...prev,
           progress: {
@@ -264,8 +312,16 @@ export default function App() {
             ? Math.max(0, idx - 1)
             : Math.min(sentences.length - 1, idx + 1);
         if (direction === 'next') {
-          const ep = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
-          if (ep.sentenceLabels[idx] === undefined) {
+          const ep = prev.progress[currentEntry.id] ?? { 
+            sentenceLabels: {}, 
+            sentenceScores: {}, 
+            sentenceConfidences: {},
+            completed: false 
+          };
+          const currentLabels = ep.sentenceLabels[idx];
+          const currentScore = ep.sentenceScores[idx];
+          
+          if (currentLabels === undefined || currentScore === undefined) {
             return {
               ...prev,
               currentSentenceIndex: nextIdx,
@@ -273,7 +329,8 @@ export default function App() {
                 ...prev.progress,
                 [currentEntry.id]: {
                   ...ep,
-                  sentenceLabels: { ...ep.sentenceLabels, [idx]: [] },
+                  sentenceLabels: { ...ep.sentenceLabels, [idx]: currentLabels ?? [] },
+                  sentenceScores: { ...ep.sentenceScores, [idx]: currentScore ?? 0 },
                 },
               },
             };
@@ -294,12 +351,18 @@ export default function App() {
       if (!currentEntry || !appState.handle) return;
       console.log(`[Submit] Submitting assessment for ${currentEntry.id}`);
 
-      const ep = appState.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+      const ep = appState.progress[currentEntry.id] ?? { 
+        sentenceLabels: {}, 
+        sentenceScores: {}, 
+        sentenceConfidences: {},
+        completed: false 
+      };
       
       const labeledEntry = buildHumanLabeledEntry(
         currentEntry,
         ep.sentenceLabels,
         ep.sentenceScores,
+        ep.sentenceConfidences ?? {},
         assessment,
         appState.handle
       );
@@ -445,8 +508,10 @@ export default function App() {
           sentenceIndex={appState.currentSentenceIndex}
           sentenceLabels={currentProgress?.sentenceLabels ?? {}}
           sentenceScores={currentProgress?.sentenceScores ?? {}}
+          sentenceConfidences={currentProgress?.sentenceConfidences ?? {}}
           currentProgress={currentProgress}
           onLabelSentence={handleLabelSentence}
+          onToggleConfidence={handleToggleConfidence}
           onScoreSentence={handleScoreSentence}
           onNavigate={handleNavigate}
           onJumpToSentence={handleJump}

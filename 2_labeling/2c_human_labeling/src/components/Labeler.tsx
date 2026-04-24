@@ -148,7 +148,7 @@ function ReasoningTrace({
       })}
       {reasoningTruncated && (
         <span style={{ display: 'block', marginTop: '10px', color: '#7A8478', fontStyle: 'italic', fontSize: '12px' }}>
-          [TRUNCATED: The AI labeler only saw the reasoning up to this point. The full trace is shown above for context.]
+          [TRUNCATED: The AI labeler only saw the reasoning up to this point.]
         </span>
       )}
     </div>
@@ -338,6 +338,7 @@ function LabelButton({
   priority,
   selected,
   disabled,
+  isLowConfidence,
   onToggle,
   onDescRequest,
   onHover,
@@ -346,6 +347,7 @@ function LabelButton({
   priority: number | null;
   selected: boolean;
   disabled: boolean;
+  isLowConfidence: boolean;
   onToggle: () => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -358,8 +360,14 @@ function LabelButton({
     );
   });
 
-  const bg = selected ? group.darkBorder : group.darkBg;
-  const textColor = selected ? '#232A2E' : group.darkText;
+  // If low confidence, we want a more distinct look:
+  // We use a darker background and a thicker dashed border.
+  const bg = selected 
+    ? (isLowConfidence ? 'rgba(0,0,0,0.25)' : group.darkBorder) 
+    : group.darkBg;
+  const textColor = selected 
+    ? (isLowConfidence ? group.darkText : '#232A2E') 
+    : group.darkText;
   const borderColor = group.darkBorder;
 
   const desc = `${LABEL_DISPLAY_NAMES[label] ?? label}\n\n${LABEL_DESCRIPTIONS[label] ?? ''}`;
@@ -374,7 +382,7 @@ function LabelButton({
         minHeight: '44px',
         padding: '5px 10px',
         background: disabled && !selected ? '#232A2E' : bg,
-        border: `1.5px solid ${disabled && !selected ? '#343F44' : borderColor}`,
+        border: `${isLowConfidence ? '2.5px' : '1.5px'} ${isLowConfidence ? 'dashed' : 'solid'} ${disabled && !selected ? '#343F44' : borderColor}`,
         borderRadius: '22px',
         color: disabled && !selected ? '#475258' : textColor,
         fontSize: '12px',
@@ -416,11 +424,13 @@ function LabelButton({
 
 function LabelPanel({
   currentLabels,
+  currentConfidences,
   onToggle,
   onDescRequest,
   onHover,
 }: {
   currentLabels: string[];
+  currentConfidences: Record<string, number>;
   onToggle: (label: string) => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -449,6 +459,7 @@ function LabelPanel({
               const sel = idx !== -1;
               const pri = sel ? idx + 1 : null;
               const dis = !sel && maxReached;
+              const isLow = currentConfidences[label] === 0;
               return (
                 <LabelButton
                   key={label}
@@ -456,6 +467,7 @@ function LabelPanel({
                   priority={pri}
                   selected={sel}
                   disabled={dis}
+                  isLowConfidence={isLow}
                   onToggle={() => onToggle(label)}
                   onDescRequest={onDescRequest}
                   onHover={onHover}
@@ -649,7 +661,7 @@ function SafetyScorePanel({
   onHover: (text: string | null, rect?: DOMRect) => void;
 }) {
   return (
-    <div>
+    <div style={{ flex: 1 }}>
       <div
         style={{
           fontSize: '9px',
@@ -662,7 +674,7 @@ function SafetyScorePanel({
       >
         Safety category · long-press for description
       </div>
-      <div style={{ display: 'flex', gap: '4px' }}>
+      <div style={{ display: 'flex', gap: '6px' }}>
         {SCORE_OPTIONS.map((v) => (
           <ScoreButton
             key={v}
@@ -756,8 +768,10 @@ interface Props {
   sentenceIndex: number;
   sentenceLabels: Record<number, string[]>;
   sentenceScores: Record<number, number>;
+  sentenceConfidences: Record<number, Record<string, number>>;
   currentProgress?: EntryProgress | null;
   onLabelSentence: (labels: string[]) => void;
+  onToggleConfidence: (label: string) => void;
   onScoreSentence: (score: number) => void;
   onNavigate: (direction: 'back' | 'next') => void;
   onJumpToSentence: (idx: number) => void;
@@ -774,8 +788,10 @@ export default function Labeler({
   sentenceIndex,
   sentenceLabels,
   sentenceScores,
+  sentenceConfidences,
   currentProgress,
   onLabelSentence,
+  onToggleConfidence,
   onScoreSentence,
   onNavigate,
   onJumpToSentence,
@@ -833,7 +849,8 @@ export default function Labeler({
   const sentences = getSentences(entry);
   const currentSentence = sentences[sentenceIndex] ?? null;
   const currentLabels: string[] = sentenceLabels[sentenceIndex] ?? [];
-  const currentScore: number | undefined = sentenceScores[sentenceIndex];
+  const currentScore: number = sentenceScores[sentenceIndex] ?? 0;
+  const currentConfidences = sentenceConfidences[sentenceIndex] ?? {};
 
   const labeledCount = Object.keys(sentenceScores).length;
   const hasScore = currentScore !== undefined;
@@ -850,6 +867,9 @@ export default function Labeler({
     },
     [currentLabels, onLabelSentence],
   );
+
+  const lastLabel = currentLabels[currentLabels.length - 1];
+  const isLowConfidence = lastLabel ? currentConfidences[lastLabel] === 0 : false;
 
   const handleJump = useCallback((idx: number) => {
     if (isAssessing) {
@@ -1064,7 +1084,6 @@ export default function Labeler({
             />
           ) : (
             <>
-              {/* Sentence header */}
               <div
                 style={{
                   flexShrink: 0,
@@ -1114,6 +1133,7 @@ export default function Labeler({
               >
                 <LabelPanel
                   currentLabels={currentLabels}
+                  currentConfidences={currentConfidences}
                   onToggle={handleToggle}
                   onDescRequest={(text) => setDescTooltip(text)}
                   onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
@@ -1128,12 +1148,44 @@ export default function Labeler({
                   borderTop: '1px solid #3D484D',
                 }}
               >
-                <SafetyScorePanel
-                  currentScore={currentScore}
-                  onScore={onScoreSentence}
-                  onDescRequest={(text) => setDescTooltip(text)}
-                  onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
-                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '6px' }}>
+                  <SafetyScorePanel
+                    currentScore={currentScore}
+                    onScore={onScoreSentence}
+                    onDescRequest={(text) => setDescTooltip(text)}
+                    onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
+                  />
+                  <div
+                    onMouseEnter={(e) => {
+                      const msg = lastLabel 
+                        ? `Flag '${LABEL_DISPLAY_NAMES[lastLabel] || lastLabel}' as low confidence (score 0).\n\nUse this if you are unsure that the behavior label fully applies to this sentence.` 
+                        : 'Low Confidence Toggle\n\nSelect a behavior label first to use this toggle. It applies to the most recently selected label.';
+                      setHoverTooltip({ text: msg, rect: e.currentTarget.getBoundingClientRect() });
+                    }}
+                    onMouseLeave={() => setHoverTooltip(null)}
+                    style={{ marginLeft: '12px' }}
+                  >
+                    <button
+                      onClick={() => { if (lastLabel) onToggleConfidence(lastLabel); }}
+                      disabled={!lastLabel}
+                      style={{
+                        padding: '4px 14px',
+                        minHeight: '40px',
+                        background: isLowConfidence ? 'rgba(230,126,128,0.15)' : '#343F44',
+                        border: `${isLowConfidence ? '2.5px' : '1.5px'} ${isLowConfidence ? 'dashed' : 'solid'} ${isLowConfidence ? '#E67E80' : '#475258'}`,
+                        borderRadius: '8px',
+                        color: isLowConfidence ? '#E67E80' : lastLabel ? '#9DA9A0' : '#475258',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        cursor: lastLabel ? 'pointer' : 'not-allowed',
+                        transition: 'all 0.1s',
+                        pointerEvents: 'none', // Let the wrapper handle hover
+                      }}
+                    >
+                      Low confidence
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Navigation */}
