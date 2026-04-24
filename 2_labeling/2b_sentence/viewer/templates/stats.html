@@ -19,12 +19,16 @@
 <!-- Summary cards -->
 <div class="stats-summary">
   <div class="stat-card">
+    <div class="stat-value">{{ stats.unique_entries }}</div>
+    <div class="stat-label">Unique samples</div>
+  </div>
+  <div class="stat-card">
     <div class="stat-value">{{ stats.total_entries }}</div>
-    <div class="stat-label">Total entries</div>
+    <div class="stat-label">Total label runs</div>
   </div>
   <div class="stat-card">
     <div class="stat-value">{{ stats.entries_with_annotations }}</div>
-    <div class="stat-label">Entries with annotations</div>
+    <div class="stat-label">Runs with annotations</div>
   </div>
   <div class="stat-card">
     <div class="stat-value">{{ stats.total_annotations }}</div>

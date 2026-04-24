@@ -12,18 +12,43 @@
 </head>
 <body>
   <nav class="navbar">
-    <div>
+    <div style="display: flex; align-items: center; gap: 1.5rem;">
       <a href="/" class="nav-brand">Reasoning Viewer</a>
       <span class="nav-sub">Labeled reasoning traces</span>
-      <a href="/stats" class="nav-link">Stats</a>
+      <a href="/stats{{ '?work_order=' + current_work_order if current_work_order else '' }}" class="nav-link">Stats</a>
+      
+      <div class="work-order-selector" style="margin-left: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+        <label for="wo-select" style="font-size: 0.8rem; opacity: 0.7;">Work Order:</label>
+        <select id="wo-select" onchange="location.href = updateQueryStringParameter(window.location.href, 'work_order', this.value)" style="background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 0.85rem;">
+          <option value="">(all entries)</option>
+          {% for wo in available_work_orders %}
+            <option value="{{ wo }}" {% if wo == current_work_order %}selected{% endif %}>{{ wo }}</option>
+          {% endfor %}
+        </select>
+      </div>
     </div>
     <button id="theme-toggle" class="theme-toggle-btn" aria-label="Toggle dark/light mode">🌙</button>
   </nav>
+
   <main class="container">
     {% block content %}{% endblock %}
   </main>
 
   <script>
+    function updateQueryStringParameter(uri, key, value) {
+      var re = new RegExp("([?&])" + key + "=.*?(&|$)", "i");
+      var separator = uri.indexOf('?') !== -1 ? "&" : "?";
+      if (value === "") {
+        let clean = uri.replace(re, '$1').replace(/[&?]$/, '');
+        return clean;
+      }
+      if (uri.match(re)) {
+        return uri.replace(re, '$1' + key + "=" + value + '$2');
+      } else {
+        return uri + separator + key + "=" + value;
+      }
+    }
+
     (function () {
       const root = document.documentElement;
       const btn  = document.getElementById("theme-toggle");

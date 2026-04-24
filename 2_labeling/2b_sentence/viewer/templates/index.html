@@ -4,6 +4,9 @@
 {% block content %}
 <div class="page-header">
   <h1>Labeled Reasoning Traces</h1>
+  {% if work_order_name %}
+  <span class="badge badge-work-order" title="Filtered by work order">📋 {{ work_order_name }}</span>
+  {% endif %}
   <span class="stat-badge">{{ total }} entries</span>
 </div>
 

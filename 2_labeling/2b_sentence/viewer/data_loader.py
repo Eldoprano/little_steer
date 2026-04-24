@@ -197,12 +197,31 @@ def _expand_entry_versions(
     ]
 
 
-def load_all_entries(data_dir: Path = DATA_DIR, *, labeled_only: bool = True) -> list[dict[str, Any]]:
-    """Load canonical dataset entries, expanded to one viewer record per label run."""
+def load_all_entries(
+    data_dir: Path = DATA_DIR,
+    *,
+    labeled_only: bool = True,
+    filter_ids: set[str] | None = None,
+    filter_map: dict[str, set[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Load canonical dataset entries, expanded to one viewer record per label run.
+
+    If filter_ids is provided, only entries with those IDs are kept.
+    If filter_map is provided (file_name -> set of IDs), filtering is scoped per file.
+    """
     entries: list[dict[str, Any]] = []
     paths = [data_dir] if data_dir.is_file() else sorted(data_dir.glob("*.jsonl"))
     for path in paths:
         source = _source_name(path)
+        
+        # Check if we should skip this file entirely or filter its IDs
+        file_filter = None
+        if filter_map is not None:
+            if source not in filter_map and path.name not in filter_map:
+                # If we have a filter map but this file isn't in it, skip
+                continue
+            file_filter = filter_map.get(source) or filter_map.get(path.name)
+
         with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -210,6 +229,14 @@ def load_all_entries(data_dir: Path = DATA_DIR, *, labeled_only: bool = True) ->
                     continue
                 try:
                     entry = json.loads(line)
+                    eid = entry.get("id")
+                    
+                    # Filtering logic
+                    if filter_ids is not None and eid not in filter_ids:
+                        continue
+                    if file_filter is not None and eid not in file_filter:
+                        continue
+
                     dataset_name = _extract_dataset_name(path, entry)
                     entries.extend(
                         _expand_entry_versions(
@@ -399,6 +426,7 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     alignment_counts: dict[str, int] = {}
     score_buckets: list[int] = [0, 0, 0]  # -1, 0, +1
     model_dataset_counts: dict[str, dict[str, int]] = {}  # model → dataset_name → count
+    unique_ids: set[tuple[str, str]] = set()
 
     # Safety guard stats — deduplicated by entry ID to avoid counting the same
     # generated entry once per labeler version
@@ -421,6 +449,7 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     entries_with_annotations = 0
 
     for entry in entries:
+        unique_ids.add((entry.get("id", ""), _get_reasoning_hash(entry)))
         annotations = entry.get("annotations") or []
         metadata = entry.get("metadata") or {}
         assessment = metadata.get("assessment") or {}
@@ -524,6 +553,7 @@ def compute_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "total_entries": len(entries),
+        "unique_entries": len(unique_ids),
         "total_annotations": total_annotations,
         "entries_with_annotations": entries_with_annotations,
         "label_counts": dict(sorted(label_counts.items(), key=lambda x: -x[1])),

@@ -30,11 +30,58 @@ from viewer.data_loader import (
     render_reasoning_html,
 )
 
+import argparse
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# Globals that can be overridden by CLI
+CURRENT_DATA_DIR = DATA_DIR
+CLI_WORK_ORDER_FILTER: dict[str, set[str]] | None = None
+CLI_WORK_ORDER_NAME: str | None = None
+
+
+def _get_available_work_orders() -> list[str]:
+    """List .json files in the project root that look like work orders."""
+    return [p.name for p in Path(__file__).parent.parent.glob("work_order*.json")]
+
+
+def _load_work_order(name: str) -> dict[str, set[str]] | None:
+    path = Path(__file__).parent.parent / name
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            wo = json.load(f)
+            if "per_file" in wo:
+                return {fname: set(ids) for fname, ids in wo["per_file"].items()}
+            if "flat_order" in wo:
+                fmap = {}
+                for item in wo["flat_order"]:
+                    fname, eid = item["file"], item["id"]
+                    fmap.setdefault(fname, set()).add(eid)
+                return fmap
+    except Exception:
+        pass
+    return None
 
 
 def _load() -> list[dict]:
-    return load_all_entries(DATA_DIR)
+    # Use query param if present, otherwise fallback to CLI override
+    wo_name = request.args.get("work_order")
+    if wo_name:
+        fmap = _load_work_order(wo_name)
+        if fmap is not None:
+            return load_all_entries(CURRENT_DATA_DIR, filter_map=fmap)
+    
+    return load_all_entries(CURRENT_DATA_DIR, filter_map=CLI_WORK_ORDER_FILTER)
+
+
+@app.context_processor
+def inject_work_orders():
+    return {
+        "available_work_orders": _get_available_work_orders(),
+        "current_work_order": request.args.get("work_order") or CLI_WORK_ORDER_NAME
+    }
 
 
 @app.route("/")
@@ -56,7 +103,7 @@ def index():
 
 @app.route("/entry/<entry_id>/<reasoning_hash>")
 def entry_detail(entry_id: str, reasoning_hash: str):
-    versions = get_all_versions(entry_id, reasoning_hash, DATA_DIR)
+    versions = get_all_versions(entry_id, reasoning_hash, CURRENT_DATA_DIR)
     if not versions:
         abort(404)
 
@@ -159,7 +206,7 @@ def api_entries():
 @app.route("/api/entry/<entry_id>/<reasoning_hash>/compare")
 def api_entry_compare(entry_id: str, reasoning_hash: str):
     """Return all labeled versions of an entry (same id, all source files)."""
-    versions = get_all_versions(entry_id, reasoning_hash, DATA_DIR)
+    versions = get_all_versions(entry_id, reasoning_hash, CURRENT_DATA_DIR)
     result = []
     for entry in versions:
         messages = entry.get("messages") or []
@@ -192,10 +239,68 @@ def api_entry_compare(entry_id: str, reasoning_hash: str):
 
 
 if __name__ == "__main__":
-    if not DATA_DIR.exists():
-        print(f"Data dir not found: {DATA_DIR}")
+    parser = argparse.ArgumentParser(description="Labeled reasoning trace viewer.")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DATA_DIR,
+        help=f"Directory containing JSONL files (default: {DATA_DIR})",
+    )
+    parser.add_argument(
+        "--work-order",
+        type=Path,
+        help="Path to a work order JSON file to filter entries.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5050,
+        help="Port to run the server on (default: 5050)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Run in debug mode",
+    )
+
+    args = parser.parse_args()
+    CURRENT_DATA_DIR = args.data_dir
+
+    if args.work_order:
+        if not args.work_order.exists():
+            print(f"Work order file not found: {args.work_order}")
+            sys.exit(1)
+        CLI_WORK_ORDER_NAME = args.work_order.name
+        with open(args.work_order, encoding="utf-8") as f:
+            wo = json.load(f)
+            # Use 'per_file' if available, otherwise 'flat_order'
+            if "per_file" in wo:
+                CLI_WORK_ORDER_FILTER = {
+                    fname: set(ids) for fname, ids in wo["per_file"].items()
+                }
+                print(f"Loaded CLI work order filter for {len(CLI_WORK_ORDER_FILTER)} file(s).")
+            elif "flat_order" in wo:
+                CLI_WORK_ORDER_FILTER = {}
+                for item in wo["flat_order"]:
+                    fname = item["file"]
+                    eid = item["id"]
+                    if fname not in CLI_WORK_ORDER_FILTER:
+                        CLI_WORK_ORDER_FILTER[fname] = set()
+                    CLI_WORK_ORDER_FILTER[fname].add(eid)
+                print(f"Loaded CLI work order filter for {len(wo['flat_order'])} entries.")
+            else:
+                print("Invalid work order format: missing 'per_file' or 'flat_order'.")
+                sys.exit(1)
+
+    if not CURRENT_DATA_DIR.exists():
+        print(f"Data dir not found: {CURRENT_DATA_DIR}")
         print("Label some files first, then run the viewer.")
     else:
-        n = sum(1 for _ in DATA_DIR.glob("*.jsonl"))
-        print(f"Serving {n} JSONL file(s) from {DATA_DIR}")
-    app.run(debug=True, port=5050)
+        n = (
+            sum(1 for _ in CURRENT_DATA_DIR.glob("*.jsonl"))
+            if CURRENT_DATA_DIR.is_dir()
+            else 1
+        )
+        print(f"Serving {n} JSONL file(s) from {CURRENT_DATA_DIR}")
+
+    app.run(debug=args.debug, port=args.port)
