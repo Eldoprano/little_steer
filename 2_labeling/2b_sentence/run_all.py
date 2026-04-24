@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -124,15 +125,15 @@ def read_budget_used(meta: JudgeMeta) -> int:
         return 0
 
 
-# Cache: (mtime, counts_by_judge_name)
-_labeled_cache: tuple[float, dict[str, int]] | None = None
+# Cache: (mtime, labeled_ids_by_judge)
+_labeled_cache: tuple[float, dict[str, set[str]]] | None = None
 
 
-def _scan_dataset_counts() -> dict[str, int]:
-    """Scan dataset.jsonl once and return a count per judge_name."""
-    counts: dict[str, int] = {}
+def _scan_dataset_labeled_ids() -> dict[str, set[str]]:
+    """Scan dataset.jsonl once and return a set of labeled entry IDs per judge_name."""
+    labeled: dict[str, set[str]] = {}
     if not DATASET_FILE.exists():
-        return counts
+        return labeled
     try:
         with open(DATASET_FILE) as f:
             for line in f:
@@ -140,23 +141,38 @@ def _scan_dataset_counts() -> dict[str, int]:
                 if not line:
                     continue
                 try:
-                    runs = json.loads(line).get("label_runs") or []
-                    seen: set[str] = set()
+                    data = json.loads(line)
+                    eid = data.get("id")
+                    runs = data.get("label_runs") or []
                     for r in runs:
                         jn = r.get("judge_name")
-                        if jn and jn not in seen:
-                            counts[jn] = counts.get(jn, 0) + 1
-                            seen.add(jn)
+                        if jn and eid:
+                            labeled.setdefault(jn, set()).add(eid)
                 except Exception:
                     pass
     except Exception:
         pass
-    return counts
+    return labeled
 
 
-def count_labeled(judge_name: str) -> int:
-    """Count entries in dataset.jsonl that have a label_run from this judge.
+def _scan_checkpoint_labeled_ids(suffix: str) -> set[str]:
+    """Scan the per-judge checkpoint file for currently labeled IDs."""
+    # Checkpoint filename logic matches pipeline.py: dataset{suffix}.checkpoint.json
+    cp_path = DATASET_FILE.parent / f"dataset{suffix}.checkpoint.json"
+    if not cp_path.exists():
+        return set()
+    try:
+        with open(cp_path) as f:
+            data = json.load(f)
+            return set(data.get("labeled_ids", []))
+    except Exception:
+        return set()
 
+
+def count_labeled(judge_name: str, suffix: str = "", work_order_ids: set[str] | None = None) -> int:
+    """Count entries in dataset.jsonl + checkpoint that have a label_run from this judge.
+
+    If work_order_ids is provided, only counts entries that are also in that set.
     Result is cached until dataset.jsonl is modified.
     """
     global _labeled_cache
@@ -166,9 +182,20 @@ def count_labeled(judge_name: str) -> int:
         mtime = DATASET_FILE.stat().st_mtime
     except OSError:
         return 0
+
     if _labeled_cache is None or _labeled_cache[0] != mtime:
-        _labeled_cache = (mtime, _scan_dataset_counts())
-    return _labeled_cache[1].get(judge_name, 0)
+        _labeled_cache = (mtime, _scan_dataset_labeled_ids())
+
+    # Get baseline from dataset.jsonl
+    labeled_set = set(_labeled_cache[1].get(judge_name, set()))
+    
+    # ADDITION: Also check the checkpoint file for labels not yet merged into the main file
+    checkpoint_ids = _scan_checkpoint_labeled_ids(suffix)
+    labeled_set.update(checkpoint_ids)
+
+    if work_order_ids is not None:
+        return len(labeled_set.intersection(work_order_ids))
+    return len(labeled_set)
 
 
 def _clean(line: str) -> str:
@@ -246,6 +273,14 @@ def _status_text(state: JudgeState, log: dict) -> Text:
     return Text(f"✗ EXIT {state.exit_code}", style="bold red")
 
 
+def _progress_text(labeled: int, total: int) -> Text:
+    if total <= 0:
+        return Text("—", style="dim")
+    pct = labeled / total
+    style = "green" if pct >= 1.0 else "yellow" if pct >= 0.5 else "white"
+    return Text(f"{labeled}/{total} ({pct:.0%})", style=style)
+
+
 def _budget_text(used: int, limit: int, budget_type: str) -> Text:
     pct = used / limit if limit > 0 else 0.0
     style = "red" if pct >= 1.0 else "yellow" if pct >= 0.75 else "green"
@@ -260,7 +295,13 @@ def _budget_text(used: int, limit: int, budget_type: str) -> Text:
     return Text(label, style=style)
 
 
-def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
+def build_dashboard(
+    states: list[JudgeState],
+    start_time: float,
+    total_entries: int = 0,
+    work_order_ids: set[str] | None = None,
+    pass_number: int = 1,
+) -> Table:
     elapsed = int(time.monotonic() - start_time)
     h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
 
@@ -275,15 +316,24 @@ def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
     )
     table.add_column("Judge", style="cyan", no_wrap=True, min_width=22)
     table.add_column("Status", no_wrap=True, min_width=12)
+    table.add_column("Progress", no_wrap=True, min_width=16)
     table.add_column("Budget used", no_wrap=True, min_width=16)
-    table.add_column("Labeled", justify="right", min_width=7)
     table.add_column("Errors", justify="right", min_width=6)
     table.add_column("Last activity", overflow="fold")
 
     for state in states:
         log = parse_log(state.meta.logfile)
         used = read_budget_used(state.meta)
-        labeled = count_labeled(state.meta.name)
+
+        # Count labels for this specific judge and pass
+        effective_name = state.meta.name
+        if pass_number > 1:
+            effective_name = f"{effective_name}_pass{pass_number}"
+        labeled = count_labeled(
+            effective_name, 
+            suffix=state.meta.suffix, 
+            work_order_ids=work_order_ids
+        )
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -292,8 +342,8 @@ def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
         table.add_row(
             state.meta.name,
             _status_text(state, log),
+            _progress_text(labeled, total_entries),
             _budget_text(used, state.meta.budget_limit, state.meta.budget_type),
-            str(labeled),
             err_text,
             log["last_signal"],
         )
@@ -303,13 +353,19 @@ def build_dashboard(states: list[JudgeState], start_time: float) -> Table:
 
 # ── Status subcommand ──────────────────────────────────────────────────────────
 
-def print_status(console: Console, metas: list[JudgeMeta]) -> None:
+def print_status(
+    console: Console,
+    metas: list[JudgeMeta],
+    total_entries: int = 0,
+    work_order_ids: set[str] | None = None,
+    pass_number: int = 1,
+) -> None:
     """Print a one-shot status table (like the old 'bash run_all.sh status')."""
     table = Table(title="Judge Status", header_style="bold white", border_style="blue")
     table.add_column("Judge", style="cyan", no_wrap=True)
     table.add_column("Process")
+    table.add_column("Progress", no_wrap=True)
     table.add_column("Budget used", no_wrap=True)
-    table.add_column("Labeled", justify="right")
     table.add_column("Errors", justify="right")
     table.add_column("Last activity", overflow="fold")
 
@@ -327,7 +383,15 @@ def print_status(console: Console, metas: list[JudgeMeta]) -> None:
         proc_text = Text(f"running (pid {pid})", style="green") if pid else Text("stopped", style="dim")
         log = parse_log(meta.logfile)
         used = read_budget_used(meta)
-        labeled = count_labeled(meta.name)
+
+        effective_name = meta.name
+        if pass_number > 1:
+            effective_name = f"{effective_name}_pass{pass_number}"
+        labeled = count_labeled(
+            effective_name, 
+            suffix=meta.suffix, 
+            work_order_ids=work_order_ids
+        )
 
         err_text = Text(str(log["error_count"]))
         if log["error_count"] > 0:
@@ -336,8 +400,8 @@ def print_status(console: Console, metas: list[JudgeMeta]) -> None:
         table.add_row(
             meta.name,
             proc_text,
+            _progress_text(labeled, total_entries),
             _budget_text(used, meta.budget_limit, meta.budget_type),
-            str(labeled),
             err_text,
             log["last_signal"],
         )
@@ -445,13 +509,27 @@ def main() -> None:
     is_tty = sys.stdout.isatty()
     console = Console() if is_tty else Console(force_terminal=True)
 
+    # Parse CLI flags before the positional input argument
+    import argparse as _ap
+    _parser = _ap.ArgumentParser(add_help=False)
+    _parser.add_argument("--work-order", default=None, dest="work_order")
+    _parser.add_argument("--pass", default=1, type=int, dest="pass_number")
+    _parser.add_argument("input", nargs="?", default=None)
+    _args, _ = _parser.parse_known_args()
+    work_order_override: str | None = _args.work_order
+    pass_number: int = _args.pass_number
+
     # Load config metadata from the registry
     registry = LabelerRegistry.from_yaml(HERE / LABELERS_FILE)
     metas: list[JudgeMeta] = []
     for entry in registry.all_entries(enabled_only=True):
         name = (entry.get("judge") or {}).get("name", "unknown")
         try:
-            metas.append(load_judge_meta(name, entry))
+            meta = load_judge_meta(name, entry)
+            if pass_number > 1:
+                if not meta.suffix.endswith(f"_pass{pass_number}"):
+                    meta.suffix += f"_pass{pass_number}"
+            metas.append(meta)
         except Exception as e:
             console.print(f"[yellow]Warning: skipping {name}: {e}[/yellow]")
 
@@ -459,16 +537,30 @@ def main() -> None:
         console.print("[red]No valid configs found.[/red]")
         sys.exit(1)
 
-    # Status subcommand
+    # Resolve work order and capture IDs/count for progress tracking
+    effective_wo_file: Path = HERE / work_order_override if work_order_override else WORK_ORDER_FILE
+    total_entries = 0
+    work_order_ids: set[str] | None = None
+
+    # Status subcommand (positional "status" still works)
     if len(sys.argv) > 1 and sys.argv[1] == "status":
-        print_status(console, metas)
+        if effective_wo_file.exists():
+            try:
+                with open(effective_wo_file) as f:
+                    _wo = json.load(f)
+                    total_entries = _wo.get("total_entries", 0)
+                    if "flat_order" in _wo:
+                        work_order_ids = {item["id"] for item in _wo["flat_order"]}
+            except Exception:
+                pass
+        print_status(console, metas, total_entries, work_order_ids, pass_number)
         return
 
-    input_arg = sys.argv[1] if len(sys.argv) > 1 else str(DATASET_FILE)
+    input_arg = _args.input or str(DATASET_FILE)
     input_path = Path(input_arg) if Path(input_arg).is_absolute() else (HERE / input_arg).resolve()
 
-    # Detect stale work order (built against old per-file structure, not dataset.jsonl)
-    if WORK_ORDER_FILE.exists():
+    # Detect stale default work order (only relevant when not overriding)
+    if not work_order_override and WORK_ORDER_FILE.exists():
         with open(WORK_ORDER_FILE) as f:
             _wo_check = json.load(f)
         _first = (_wo_check.get("flat_order") or [{}])[0]
@@ -479,29 +571,31 @@ def main() -> None:
             )
             WORK_ORDER_FILE.unlink()
 
-    # Ensure work order exists — generate it if not
-    if not WORK_ORDER_FILE.exists():
+    # Ensure default work order exists — generate it if not (skipped when using override)
+    if not work_order_override and not WORK_ORDER_FILE.exists():
         console.print(
             f"[bold yellow]Work order not found — generating work_order.json "
             f"(all entries, seed={WORK_ORDER_SEED})...[/bold yellow]"
         )
         try:
             generate_work_order(input_path, WORK_ORDER_FILE, WORK_ORDER_SEED)
-            with open(WORK_ORDER_FILE) as f:
-                wo = json.load(f)
-            console.print(
-                f"[green]Generated:[/green] {wo['total_entries']} entries "
-                f"({wo['started_entries']} already labeled, {wo['untouched_entries']} untouched)\n"
-            )
         except Exception as e:
             console.print(f"[red]Failed to generate work order: {e}[/red]")
             sys.exit(1)
-    else:
-        with open(WORK_ORDER_FILE) as f:
+
+    # Load effective work order for dashboard
+    if effective_wo_file.exists():
+        with open(effective_wo_file) as f:
             wo = json.load(f)
+        total_entries = wo.get("total_entries", 0)
+        if "flat_order" in wo:
+            work_order_ids = {item["id"] for item in wo["flat_order"]}
+        
+        pass_label = f"  [dim](pass {pass_number})[/dim]" if pass_number > 1 else ""
         console.print(
-            f"[dim]Work order:[/dim] {wo['total_entries']} entries — "
-            f"generated {wo['generated_at'][:10]}\n"
+            f"[dim]Work order:[/dim] {effective_wo_file.name} — "
+            f"{total_entries} entries — "
+            f"generated {wo['generated_at'][:10]}{pass_label}\n"
         )
 
     console.print(f"[bold]Starting {len(metas)} judges on:[/bold] {input_path}")
@@ -514,8 +608,14 @@ def main() -> None:
         console.print(f"  Starting [cyan]{meta.name}[/cyan] → {meta.logfile.name}")
         log_fh = open(meta.logfile, "w")
         log_handles.append(log_fh)
+        cmd = ["uv", "run", "run.py", "--config", meta.config_file, "--judge", meta.name]
+        if work_order_override:
+            cmd += ["--work-order", work_order_override]
+        if pass_number > 1:
+            cmd += ["--pass", str(pass_number)]
+        cmd.append(str(input_path))
         proc = subprocess.Popen(
-            ["uv", "run", "run.py", "--config", meta.config_file, "--judge", meta.name, str(input_path)],
+            cmd,
             cwd=str(HERE),
             stdout=log_fh,
             stderr=log_fh,
@@ -531,13 +631,13 @@ def main() -> None:
                 while True:
                     for s in states:
                         s.poll()
-                    live.update(build_dashboard(states, start_time))
+                    live.update(build_dashboard(states, start_time, total_entries, work_order_ids, pass_number))
 
                     if all(not s.running for s in states if s.proc is not None):
                         time.sleep(1)
                         for s in states:
                             s.poll()
-                        live.update(build_dashboard(states, start_time))
+                        live.update(build_dashboard(states, start_time, total_entries, work_order_ids, pass_number))
                         break
 
                     time.sleep(2)
@@ -545,23 +645,25 @@ def main() -> None:
             while True:
                 for s in states:
                     s.poll()
-                console.print(build_dashboard(states, start_time))
+                console.print(build_dashboard(states, start_time, total_entries, work_order_ids, pass_number))
 
                 if all(not s.running for s in states if s.proc is not None):
                     time.sleep(1)
                     for s in states:
                         s.poll()
-                    console.print(build_dashboard(states, start_time))
+                    console.print(build_dashboard(states, start_time, total_entries, work_order_ids, pass_number))
                     break
 
                 time.sleep(2)
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted — sending SIGTERM to all judges...[/yellow]")
+        console.print("\n[yellow]Interrupted — sending SIGINT for graceful shutdown...[/yellow]")
         for state in states:
             if state.running:
-                state.proc.terminate()
-        console.print("[dim]Checkpoints are saved. Re-run tomorrow to resume.[/dim]")
+                state.proc.send_signal(signal.SIGINT)
+        console.print("[dim]Waiting for workers to save... (Ctrl+C again to force exit)[/dim]")
+        # Give them a few seconds, then we exit run_all.py itself
+        time.sleep(3)
     finally:
         for fh in log_handles:
             try:
@@ -570,7 +672,13 @@ def main() -> None:
                 pass
 
     console.print()
-    total = sum(count_labeled(s.meta.name) for s in states)
+    total = sum(
+        count_labeled(
+            s.meta.name if pass_number == 1 else f"{s.meta.name}_pass{pass_number}", 
+            suffix=s.meta.suffix,
+            work_order_ids=work_order_ids
+        ) for s in states
+    )
     console.print(f"[bold green]=== All done ===[/bold green]  total labeled: [green]{total}[/green]")
 
 

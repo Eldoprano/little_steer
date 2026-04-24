@@ -123,6 +123,7 @@ def call_llm(
     cfg: JudgeConfig,
     prompt: str,
     system_prompt: str | None = None,
+    request_logprobs: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Make a single chat completion call, returning (raw content, metadata)."""
     messages: list[dict[str, str]] = []
@@ -151,9 +152,12 @@ def call_llm(
     if cfg.extra_body:
         kwargs["extra_body"] = cfg.extra_body
 
+    if request_logprobs:
+        kwargs["logprobs"] = True
+
     response = client.chat.completions.create(**kwargs)
     content = response.choices[0].message.content
-    
+
     metadata = {
         "model": response.model,
         "finish_reason": response.choices[0].finish_reason,
@@ -173,7 +177,52 @@ def call_llm(
     if metadata["finish_reason"] == "content_filter":
         raise ValueError("Model refused to provide output due to content filtering.")
 
+    lp = response.choices[0].logprobs
+    if request_logprobs and lp and lp.content:
+        metadata["logprob_tokens"] = lp.content
+
     return (content or ""), metadata
+
+
+# ── Logprob extraction ────────────────────────────────────────────────────────
+
+def _extract_label_logprobs(
+    label: str,
+    logprob_tokens: list,
+    search_start: int = 0,
+) -> tuple[list[float], int]:
+    """Find `"<label>"` in the token stream starting at search_start.
+
+    Returns (list_of_logprobs_for_covering_tokens, new_search_start).
+    new_search_start advances past the found occurrence so successive calls
+    on the same token stream don't re-match the same label position.
+    Returns ([], search_start) when the label is not found.
+    """
+    # Build per-character → (token_index, logprob) mapping
+    char_map: list[tuple[int, float]] = []
+    for i, tok_lp in enumerate(logprob_tokens):
+        for _ in tok_lp.token:
+            char_map.append((i, tok_lp.logprob))
+
+    full_text = "".join(t.token for t in logprob_tokens)
+
+    search = f'"{label}"'
+    idx = full_text.find(search, search_start)
+    if idx == -1:
+        return [], search_start
+
+    label_start = idx + 1       # skip leading "
+    label_end = label_start + len(label)
+
+    seen_tok_idx: set[int] = set()
+    logprobs_for_label: list[float] = []
+    for ci in range(label_start, min(label_end, len(char_map))):
+        tok_idx, lp = char_map[ci]
+        if tok_idx not in seen_tok_idx:
+            seen_tok_idx.add(tok_idx)
+            logprobs_for_label.append(lp)
+
+    return logprobs_for_label, idx + len(search)
 
 
 # ── Output parsing ────────────────────────────────────────────────────────────
@@ -289,6 +338,7 @@ def label_entry(
     """Label one entry: format prompt → call LLM → parse → retry on failure.
 
     Uses exponential backoff: waits retry_delay * 2^attempt seconds between tries.
+    When cfg.logprobs is True, attaches per-label token logprobs to each sentence annotation.
     """
     user_message, effective_system = build_messages(
         prompt_template, user_prompt, model_reasoning, model_response,
@@ -299,10 +349,26 @@ def label_entry(
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
-            raw, metadata = call_llm(client, cfg, user_message, system_prompt=effective_system)
+            raw, metadata = call_llm(
+                client, cfg, user_message,
+                system_prompt=effective_system,
+                request_logprobs=cfg.logprobs,
+            )
             output = parse_llm_output(raw)
             # Inject metadata into the final output
             output.metadata = metadata
+            # Attach per-label logprobs when available
+            lp_tokens = metadata.get("logprob_tokens")
+            if lp_tokens:
+                search_offset = 0
+                for sentence in output.sentences:
+                    per_label: dict[str, list[float]] = {}
+                    for lbl in sentence.labels:
+                        lps, search_offset = _extract_label_logprobs(lbl, lp_tokens, search_offset)
+                        if lps:
+                            per_label[lbl] = lps
+                    if per_label:
+                        sentence.label_logprobs = per_label
             return output
         except openai.RateLimitError as e:
             if _is_billing_quota_error(e):

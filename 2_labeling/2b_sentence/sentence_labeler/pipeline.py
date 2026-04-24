@@ -677,6 +677,11 @@ def process_file(
                 since_checkpoint += 1
                 if since_checkpoint >= pipeline_cfg.checkpoint_every:
                     checkpoint.save()
+                    # Periodic merge so progress is visible in run_all.py dashboard
+                    if in_place and updated_entries:
+                        with write_lock:
+                            _atomic_merge_label_runs(output_path, updated_entries)
+                            updated_entries.clear()
                     since_checkpoint = 0
             elif result == "skipped":
                 skipped += 1
@@ -688,12 +693,8 @@ def process_file(
             progress.advance(file_task)
 
     if in_place and updated_entries:
-        rewritten = [updated_entries.get(entry.id, entry) for entry in entries]
-        tmp = output_path.with_suffix(".jsonl.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            for entry in rewritten:
-                f.write(entry.model_dump_json() + "\n")
-        tmp.replace(output_path)
+        # Final merge for any remaining entries
+        _atomic_merge_label_runs(output_path, updated_entries)
 
     checkpoint.save()
     return labeled, skipped, failed, budget_stopped
@@ -1018,6 +1019,13 @@ def process_breadth_first(
                     if since_checkpoint >= pipeline_cfg.checkpoint_every:
                         for cp in checkpoints.values():
                             cp.save()
+                        
+                        # Periodic merge so progress is visible in run_all.py dashboard
+                        for fname in in_place_fnames:
+                            with write_locks[fname]:
+                                if in_place_new_entries[fname]:
+                                    _atomic_merge_label_runs(output_paths[fname], in_place_new_entries[fname])
+                                    in_place_new_entries[fname].clear()
                         since_checkpoint = 0
                 elif result == "skipped":
                     skipped += 1
@@ -1027,17 +1035,22 @@ def process_breadth_first(
                     failed += 1
 
                 progress.advance(task_id)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]  Interrupted — waiting for active workers to finish and saving…[/yellow]")
+        # ThreadPoolExecutor __exit__ will wait for currently running futures.
     finally:
         # Runs on normal exit, budget stop, AND Ctrl+C — so no labeled work is lost.
         for cp in checkpoints.values():
             cp.save()
         for fname in in_place_fnames:
-            if in_place_new_entries[fname]:
-                console.print(
-                    f"[dim]Merging {len(in_place_new_entries[fname])} labeled entries "
-                    f"into {output_paths[fname].name}…[/dim]"
-                )
-                _atomic_merge_label_runs(output_paths[fname], in_place_new_entries[fname])
+            with write_locks[fname]:
+                if in_place_new_entries[fname]:
+                    console.print(
+                        f"[dim]Merging {len(in_place_new_entries[fname])} labeled entries "
+                        f"into {output_paths[fname].name}…[/dim]"
+                    )
+                    _atomic_merge_label_runs(output_paths[fname], in_place_new_entries[fname])
+                    in_place_new_entries[fname].clear()
 
     return labeled, skipped, failed, budget_stopped
 

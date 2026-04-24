@@ -282,6 +282,17 @@ def run_multi_judge(
     is_flag=True, default=False,
     help="Print the formatted prompt for the first valid entry and exit (no LLM call).",
 )
+@click.option(
+    "--work-order", "work_order",
+    default=None,
+    help="Override pipeline.work_order_file for all judges in this run.",
+)
+@click.option(
+    "--pass", "pass_number",
+    default=1, type=int,
+    help="Labeling pass number. Pass >1 appends '_pass<N>' to all judge names so "
+         "labels are stored separately, enabling multiple independent passes over the same work order.",
+)
 def main(
     files: tuple[str, ...],
     config: str | None,
@@ -295,6 +306,8 @@ def main(
     token_budget: int | None,
     max_entries: int | None,
     show_prompt: bool,
+    work_order: str | None,
+    pass_number: int,
 ) -> None:
     """Label reasoning sentences in JSONL files using one or more LLM judges.
 
@@ -380,6 +393,14 @@ def main(
                 labeler_cfg.pipeline.token_budget = token_budget
             if max_entries is not None:
                 labeler_cfg.pipeline.max_entries = max_entries
+            if work_order is not None:
+                labeler_cfg.pipeline.work_order_file = work_order
+            if pass_number > 1:
+                for j in labeler_cfg.judges:
+                    j.name = f"{j.name}_pass{pass_number}"
+                # Ensure checkpoint files are also pass-specific
+                if not labeler_cfg.output.suffix.endswith(f"_pass{pass_number}"):
+                    labeler_cfg.output.suffix += f"_pass{pass_number}"
 
             judge = labeler_cfg.judges[0]
             console.rule(f"[bold blue]Judge: {judge.name}[/bold blue]")
@@ -419,6 +440,14 @@ def main(
         cfg.pipeline.token_budget = token_budget
     if max_entries is not None:
         cfg.pipeline.max_entries = max_entries
+    if work_order is not None:
+        cfg.pipeline.work_order_file = work_order
+    if pass_number > 1:
+        for j in cfg.judges:
+            j.name = f"{j.name}_pass{pass_number}"
+        # Ensure checkpoint files are also pass-specific
+        if not cfg.output.suffix.endswith(f"_pass{pass_number}"):
+            cfg.output.suffix += f"_pass{pass_number}"
 
     # Filter judges
     if judge_filter:

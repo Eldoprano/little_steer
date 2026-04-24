@@ -51,6 +51,7 @@ labelers:
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
+      logprobs: true
     pipeline:
       max_workers: 8
       max_retries: 2
@@ -67,6 +68,7 @@ labelers:
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
+      logprobs: true
       reasoning_effort: none
     pipeline:
       max_workers: 2
@@ -84,6 +86,7 @@ labelers:
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
+      logprobs: true
     pipeline:
       max_workers: 2
       max_retries: 1
@@ -100,6 +103,7 @@ labelers:
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
+      logprobs: true
     pipeline:
       max_workers: 4
       max_retries: 2
@@ -117,6 +121,7 @@ labelers:
       backend: gemini
       api_key_source: gemini-free-api-key
       rpm: 10
+      logprobs: true
     pipeline:
       max_retries: 2
       retry_delay: 10.0
@@ -131,6 +136,7 @@ labelers:
       backend: gemini
       api_key_source: gemini-free-api-key
       rpm: 15
+      logprobs: true
     pipeline:
       max_retries: 2
       max_workers: 4
@@ -147,6 +153,7 @@ labelers:
       api_key_source: gemini-free-api-key
       timeout: 180
       rpm: 10
+      logprobs: true
     pipeline:
       max_retries: 2
       max_workers: 4
@@ -162,6 +169,7 @@ labelers:
       backend: gemini
       api_key_source: gemini-free-api-key
       rpm: 15
+      logprobs: true
     pipeline:
       max_retries: 2
       max_workers: 4
@@ -180,6 +188,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true
     pipeline:
       request_state_file: "_artifacts/openrouter_glm_request_state.json"
     output:
@@ -194,6 +203,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true
     pipeline:
       request_state_file: "_artifacts/openrouter_trinity_request_state.json"
     output:
@@ -208,6 +218,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true
     pipeline:
       request_state_file: "_artifacts/openrouter_gpt_oss_request_state.json"
     output:
@@ -222,6 +233,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true 
     pipeline:
       request_state_file: "_artifacts/openrouter_elephant_alpha_request_state.json"
     output:
@@ -236,6 +248,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true 
     pipeline:
       request_state_file: "_artifacts/openrouter_qwen_request_state.json"
     output:
@@ -250,6 +263,7 @@ labelers:
       timeout: 300
       rpm: 20
       rpd: 167
+      logprobs: true 
     pipeline:
       request_state_file: "_artifacts/openrouter_llama_request_state.json"
     output:
