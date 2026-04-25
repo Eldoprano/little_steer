@@ -395,10 +395,6 @@ def apply_labeling_output(
     labeled_at = datetime.now(timezone.utc).isoformat()
     generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
 
-    # Keep only the latest prompt version requested by the user.
-    new_entry.label_runs = [
-        run for run in new_entry.label_runs if run.taxonomy_version == taxonomy_version
-    ]
     run = LabelRun(
         judge_name=judge_name,
         judge_model_id=judge_model_id,
@@ -497,7 +493,7 @@ def process_file(
     def _process_one(entry: ConversationEntry) -> str:
         """Process a single entry. Returns "labeled", "skipped", "budget", or "failed"."""
         # Skip already done — but re-label if the generation changed since last run
-        if entry.id in done_ids:
+        if not pipeline_cfg.overwrite_existing and entry.id in done_ids:
             source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
             stored_hash = done_hashes.get(entry.id)
             if stored_hash and source_hash and source_hash != stored_hash:
@@ -855,7 +851,7 @@ def process_breadth_first(
         item for item in flat_order
         if item["file"] in all_entries
         and item["id"] in all_entries[item["file"]]
-        and item["id"] not in done_ids_per_file.get(item["file"], set())
+        and (pipeline_cfg.overwrite_existing or item["id"] not in done_ids_per_file.get(item["file"], set()))
     ]
     progress.update(task_id, total=len(todo))
 
@@ -869,7 +865,7 @@ def process_breadth_first(
 
         if entry is None:
             return "skipped"
-        if eid in done_ids_per_file.get(fname, set()):
+        if not pipeline_cfg.overwrite_existing and eid in done_ids_per_file.get(fname, set()):
             source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
             stored_hash = done_hashes_per_file.get(fname, {}).get(eid)
             if stored_hash and source_hash and source_hash != stored_hash:

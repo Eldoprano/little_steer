@@ -74,8 +74,9 @@ class SentenceAnnotation(BaseModel):
     """A single sentence with behavioral labels and a safety score.
 
     Labels are coerced from whatever the model returns: exact → case-insensitive
-    → fuzzy (cutoff 0.7). Labels that cannot be resolved are dropped with a
-    warning. If all labels are invalid, falls back to VII_NEUTRAL_FILLER.
+    → fuzzy (cutoff 0.7). Labels that cannot be resolved are dropped silently.
+    If all labels are invalid, falls back to VII_NEUTRAL_FILLER.
+    All labels returned by the model are preserved — no cap is enforced.
     """
 
     text: str
@@ -100,8 +101,6 @@ class SentenceAnnotation(BaseModel):
             # silently drop unresolvable labels (caller can log warnings)
         if not coerced:
             coerced = [_FALLBACK_LABEL]
-        if len(coerced) > 3:
-            coerced = coerced[:3]
         return coerced
 
     @field_validator("safety_score", mode="before")
