@@ -78,8 +78,8 @@ def _truncate_to_sentences(text: str, n: int) -> str:
     """Return approximately the first n sentences using simple heuristics."""
     if not text:
         return ""
-    # Split on sentence-ending punctuation followed by whitespace or end
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    # Split on sentence-ending punctuation optionally followed by closing quotes/brackets, then whitespace
+    parts = re.split(r'(?<=[.!?])(?:["”\'\)\]]*)\s+', text.strip())
     return " ".join(parts[:n])
 
 

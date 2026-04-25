@@ -155,10 +155,10 @@ function splitReasoningText(text: string): Array<{ text: string; start: number; 
   const raw: Array<{ text: string; start: number; end: number }> = [];
 
   // Match: 
-  // 1. A sequence of characters that ends with (. ! ? or :) AND (whitespace or end of string)
+  // 1. A sequence of characters that ends with (. ! ? or :) followed by optional closing quotes/brackets AND (whitespace or end of string)
   // OR 
   // 2. Lines as explicit separators
-  const re = /.*?[.!?:](\s+|$)|[^\n]+(\n|$)/g;
+  const re = /.*?[.!?:]["”'’)\]]*(\s+|$)|[^\n]+(\n|$)/g;
   
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
@@ -192,7 +192,7 @@ function splitReasoningText(text: string): Array<{ text: string; start: number; 
     // 2. Backward merge: continuation of previous sentence or tiny trailing fragment
     if (
       last &&
-      (!/[.!?:]$/.test(last.text) ||
+      (!/[.!?:]["”'’)\]]*$/.test(last.text) ||
         /^[a-z,;]/.test(current.text) ||
         (current.text.length <= 3 && i === processing.length - 1))
     ) {
