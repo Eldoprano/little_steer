@@ -1160,11 +1160,6 @@ class ResponseGenerator:
                 },
                 "generation_hash": make_generation_hash(result["reasoning"]),
                 "quality": {
-                    "approved": _is_approved(
-                        result["finish_reason"],
-                        result["reasoning"],
-                        result["response"],
-                    ),
                     "issues": [],
                     "checked_at": generated_at,
                 },

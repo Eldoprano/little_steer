@@ -132,14 +132,6 @@ def _is_approved(entry: ConversationEntry) -> bool:
 def _quality_payload(entry: ConversationEntry) -> dict:
     issues = sorted(_entry_quality_issues(entry))
     return {
-        "approved": not {
-            "think_artifact",
-            "max_length",
-            "repetition",
-            "failed",
-            "empty_response",
-            "foreign_script",
-        }.intersection(issues),
         "issues": issues,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -194,9 +186,10 @@ def tag_file(path: Path, dry_run: bool) -> int:
     changed = 0
     for entry in entries:
         quality = _quality_payload(entry)
-        if entry.metadata.get("quality") != quality or entry.metadata.get("approved") != quality["approved"]:
+        approved = _is_approved(entry)
+        if entry.metadata.get("quality") != quality or entry.metadata.get("approved") != approved:
             entry.metadata["quality"] = quality
-            entry.metadata["approved"] = quality["approved"]
+            entry.metadata["approved"] = approved
             changed += 1
     if changed:
         _rewrite(path, entries, dry_run)
@@ -220,7 +213,7 @@ def fix_artifacts_file(path: Path, dry_run: bool) -> int:
             assistant_msg["content"] = content
             quality = _quality_payload(entry)
             entry.metadata["quality"] = quality
-            entry.metadata["approved"] = quality["approved"]
+            entry.metadata["approved"] = _is_approved(entry)
             fixed += 1
     if fixed:
         _rewrite(path, entries, dry_run)
@@ -363,9 +356,10 @@ def main() -> None:
                     if args.model not in entry.model:
                         continue
                     quality = _quality_payload(entry)
-                    if entry.metadata.get("quality") != quality or entry.metadata.get("approved") != quality["approved"]:
+                    approved = _is_approved(entry)
+                    if entry.metadata.get("quality") != quality or entry.metadata.get("approved") != approved:
                         entry.metadata["quality"] = quality
-                        entry.metadata["approved"] = quality["approved"]
+                        entry.metadata["approved"] = approved
                         changed += 1
                 if changed:
                     _rewrite(path, entries, dry)
@@ -398,7 +392,7 @@ def main() -> None:
                         assistant_msg["content"] = content
                         quality = _quality_payload(entry)
                         entry.metadata["quality"] = quality
-                        entry.metadata["approved"] = quality["approved"]
+                        entry.metadata["approved"] = _is_approved(entry)
                         fixed += 1
                 if fixed:
                     _rewrite(path, entries, dry)
