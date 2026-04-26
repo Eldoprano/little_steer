@@ -55,7 +55,8 @@ export default function StatsView({ entries, state, onClose, onReset, onClearDat
     const jsonl = exportAsJsonl(
       entries,
       state.progress as Parameters<typeof exportAsJsonl>[1],
-      state.handle || 'unknown'
+      state.handle || 'unknown',
+      state.llmHintsEnabled,
     );
     if (!jsonl.trim()) {
       alert('No completed entries to export yet.');

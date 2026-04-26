@@ -38,7 +38,7 @@ export function clearEntries(): void {
 // ── Progress storage ─────────────────────────────────────────────────────────
 
 export function defaultProgress(): PersistedState {
-  return { handle: null, progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0 };
+  return { handle: null, progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0, llmHintsEnabled: true };
 }
 
 /** Migrate old progress records that lack sentenceScores or sentenceConfidences. */
@@ -51,7 +51,7 @@ function migrateProgress(p: PersistedState): PersistedState {
       sentenceConfidences: ep.sentenceConfidences ?? {}
     };
   }
-  return { ...p, handle: p.handle ?? null, progress: migrated };
+  return { ...p, handle: p.handle ?? null, progress: migrated, llmHintsEnabled: p.llmHintsEnabled ?? true };
 }
 
 export function saveProgress(state: PersistedState): void {
@@ -120,7 +120,7 @@ export function getSentences(entry: ConversationEntry) {
 /**
  * Convert a Unicode code point offset (e.g. from Python) to a JS UTF-16 code unit offset.
  */
-function codePointToCodeUnitOffset(str: string, cpOffset: number): number {
+export function codePointToCodeUnitOffset(str: string, cpOffset: number): number {
   let cuOffset = 0;
   let cpCount = 0;
   while (cpCount < cpOffset && cuOffset < str.length) {
@@ -206,6 +206,64 @@ function splitReasoningText(text: string): Array<{ text: string; start: number; 
   return merged.length > 0 ? merged : [{ text: text.trim(), start: 0, end: text.length }];
 }
 
+// ── LLM hint computation ─────────────────────────────────────────────────────
+
+/**
+ * Compute per-sentence LLM vote counts from all non-human label runs.
+ *
+ * labelVotes[sentIdx][label] = number of LLM judges that assigned this label
+ * scoreVotes[sentIdx][scoreValue] = number of LLM judges that assigned this score
+ *
+ * LLM spans use Python code-point offsets; human sentences use JS code-unit
+ * offsets. We convert LLM spans before comparing.
+ */
+export function computeLlmHints(
+  entry: ConversationEntry,
+  sentences: ReturnType<typeof getSentences>,
+): {
+  labelVotes: Record<number, Record<string, number>>;
+  scoreVotes: Record<number, Record<string, number>>;
+} {
+  const labelVotes: Record<number, Record<string, number>> = {};
+  const scoreVotes: Record<number, Record<string, number>> = {};
+
+  const reasoningIdx = entry.messages.findIndex((m) => m.role === 'reasoning');
+  const reasoningText = reasoningIdx >= 0 ? entry.messages[reasoningIdx].content : '';
+
+  const llmRuns = (entry.label_runs ?? []).filter(
+    (r) => !r.judge_name.startsWith('human_') && r.status !== 'error' && !r.error,
+  );
+
+  for (const run of llmRuns) {
+    const spans = run.spans ?? [];
+    for (const sent of sentences) {
+      const overlapping = spans.filter((sp) => {
+        const spStart = codePointToCodeUnitOffset(reasoningText, sp.char_start);
+        const spEnd = codePointToCodeUnitOffset(reasoningText, sp.char_end);
+        return spStart < sent.char_end && spEnd > sent.char_start;
+      });
+      if (overlapping.length === 0) continue;
+
+      if (!labelVotes[sent.index]) labelVotes[sent.index] = {};
+      if (!scoreVotes[sent.index]) scoreVotes[sent.index] = {};
+
+      for (const sp of overlapping) {
+        for (const lbl of sp.labels ?? []) {
+          if (lbl && lbl !== 'none') {
+            labelVotes[sent.index][lbl] = (labelVotes[sent.index][lbl] ?? 0) + 1;
+          }
+        }
+        if (typeof sp.score === 'number') {
+          const key = String(sp.score);
+          scoreVotes[sent.index][key] = (scoreVotes[sent.index][key] ?? 0) + 1;
+        }
+      }
+    }
+  }
+
+  return { labelVotes, scoreVotes };
+}
+
 // ── Export helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -223,6 +281,7 @@ export function buildHumanLabeledEntry(
     alignment: string;
   },
   handle: string,
+  llmHintsEnabled: boolean = true,
 ): ConversationEntry {
   const sentences = getSentences(original);
 
@@ -276,6 +335,7 @@ export function buildHumanLabeledEntry(
       labeled_at: new Date().toISOString(),
       human_labeled: true,
       judge_name: judgeName,
+      llm_hints_enabled: llmHintsEnabled,
     },
   };
 }
@@ -329,26 +389,28 @@ export function reconstructProgress(entry: ConversationEntry, judgeName: string)
  */
 export function exportAsJsonl(
   entries: ConversationEntry[],
-  progressMap: Record<string, { 
-    sentenceLabels: Record<number, string[]>; 
-    sentenceScores: Record<number, number>; 
+  progressMap: Record<string, {
+    sentenceLabels: Record<number, string[]>;
+    sentenceScores: Record<number, number>;
     sentenceConfidences: Record<number, Record<string, number>>;
-    assessment?: { trajectory: string; turning_point: number; alignment: string }; 
-    completed: boolean 
+    assessment?: { trajectory: string; turning_point: number; alignment: string };
+    completed: boolean
   }>,
   handle: string,
+  llmHintsEnabled: boolean = true,
 ): string {
   const lines: string[] = [];
   for (const entry of entries) {
     const prog = progressMap[entry.id];
     if (!prog?.completed || !prog.assessment) continue;
     const humanEntry = buildHumanLabeledEntry(
-      entry, 
-      prog.sentenceLabels, 
-      prog.sentenceScores ?? {}, 
+      entry,
+      prog.sentenceLabels,
+      prog.sentenceScores ?? {},
       prog.sentenceConfidences ?? {},
-      prog.assessment, 
-      handle
+      prog.assessment,
+      handle,
+      llmHintsEnabled,
     );
     lines.push(JSON.stringify(humanEntry));
   }

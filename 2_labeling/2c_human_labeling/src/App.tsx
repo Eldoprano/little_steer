@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { ConversationEntry, Assessment, PersistedState } from './types';
 import {
   saveEntries,
@@ -12,6 +12,7 @@ import {
   filterLabeledEntries,
   buildHumanLabeledEntry,
   reconstructProgress,
+  computeLlmHints,
 } from './store';
 import DataLoader from './components/DataLoader';
 import Labeler from './components/Labeler';
@@ -46,7 +47,15 @@ export default function App() {
         completed: false 
       })
     : null;
-  const sentences = currentEntry ? getSentences(currentEntry) : [];
+  const sentences = useMemo(
+    () => (currentEntry ? getSentences(currentEntry) : []),
+    [currentEntry],
+  );
+
+  const llmHints = useMemo(
+    () => (currentEntry && sentences.length > 0 ? computeLlmHints(currentEntry, sentences) : null),
+    [currentEntry, sentences],
+  );
 
   const completedCount = entries.filter((e) => appState.progress[e.id]?.completed).length;
   // User preference: show X/N as "working on the X-th entry"
@@ -64,6 +73,10 @@ export default function App() {
 
   const handleSetHandle = useCallback((handle: string) => {
     setAppState((prev) => ({ ...prev, handle }));
+  }, []);
+
+  const handleToggleLlmHints = useCallback(() => {
+    setAppState((prev) => ({ ...prev, llmHintsEnabled: !prev.llmHintsEnabled }));
   }, []);
 
   const handleLoad = useCallback((newEntries: ConversationEntry[]) => {
@@ -217,6 +230,40 @@ export default function App() {
     }
   }, [appState.handle, entries.length, isLoading, handleLoad]);
 
+  // Pre-populate labels from LLM votes when entering a fresh sentence with hints on
+  useEffect(() => {
+    if (!currentEntry || !appState.llmHintsEnabled || !llmHints) return;
+    const sentIdx = appState.currentSentenceIndex;
+    const entryId = currentEntry.id;
+    const votes: Record<string, number> = llmHints.labelVotes[sentIdx] ?? {};
+    const preSelected = Object.entries(votes)
+      .filter(([, c]) => (c as number) > 0)
+      .sort(([, a], [, b]) => (b as number) - (a as number))
+      .slice(0, 3)
+      .map(([l]) => l);
+    if (preSelected.length === 0) return;
+
+    setAppState((prev) => {
+      const ep = prev.progress[entryId] ?? {
+        sentenceLabels: {},
+        sentenceScores: {},
+        sentenceConfidences: {},
+        completed: false,
+      };
+      if (ep.sentenceLabels[sentIdx] !== undefined) return prev;
+      return {
+        ...prev,
+        progress: {
+          ...prev.progress,
+          [entryId]: {
+            ...ep,
+            sentenceLabels: { ...ep.sentenceLabels, [sentIdx]: preSelected },
+          },
+        },
+      };
+    });
+  }, [appState.currentSentenceIndex, currentEntry?.id, appState.llmHintsEnabled, llmHints]);
+
   const handleLabelSentence = useCallback(
     (labels: string[]) => {
       if (!currentEntry) return;
@@ -364,7 +411,8 @@ export default function App() {
         ep.sentenceScores,
         ep.sentenceConfidences ?? {},
         assessment,
-        appState.handle
+        appState.handle,
+        appState.llmHintsEnabled,
       );
 
       try {
@@ -510,6 +558,9 @@ export default function App() {
           sentenceScores={currentProgress?.sentenceScores ?? {}}
           sentenceConfidences={currentProgress?.sentenceConfidences ?? {}}
           currentProgress={currentProgress}
+          llmHintsEnabled={appState.llmHintsEnabled}
+          llmLabelVotes={llmHints?.labelVotes[appState.currentSentenceIndex] ?? {}}
+          llmScoreVotes={llmHints?.scoreVotes[appState.currentSentenceIndex] ?? {}}
           onLabelSentence={handleLabelSentence}
           onToggleConfidence={handleToggleConfidence}
           onScoreSentence={handleScoreSentence}
@@ -517,6 +568,7 @@ export default function App() {
           onJumpToSentence={handleJump}
           onSubmitAssessment={handleSubmitAssessment}
           onShowStats={() => setScreen('stats')}
+          onToggleLlmHints={handleToggleLlmHints}
           allDone={allSentencesLabeled}
         />
       ) : (
