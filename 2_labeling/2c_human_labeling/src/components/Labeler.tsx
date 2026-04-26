@@ -339,6 +339,9 @@ function LabelButton({
   selected,
   disabled,
   isLowConfidence,
+  inDoubtMode,
+  llmVoteCount,
+  llmHintsEnabled,
   onToggle,
   onDescRequest,
   onHover,
@@ -348,6 +351,9 @@ function LabelButton({
   selected: boolean;
   disabled: boolean;
   isLowConfidence: boolean;
+  inDoubtMode: boolean;
+  llmVoteCount: number;
+  llmHintsEnabled: boolean;
   onToggle: () => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -360,40 +366,45 @@ function LabelButton({
     );
   });
 
-  // If low confidence, we want a more distinct look:
-  // We use a darker background and a thicker dashed border.
-  const bg = selected 
-    ? (isLowConfidence ? 'rgba(0,0,0,0.25)' : group.darkBorder) 
+  const bg = selected
+    ? (isLowConfidence ? 'rgba(0,0,0,0.25)' : group.darkBorder)
     : group.darkBg;
-  const textColor = selected 
-    ? (isLowConfidence ? group.darkText : '#232A2E') 
+  const textColor = selected
+    ? (isLowConfidence ? group.darkText : '#232A2E')
     : group.darkText;
   const borderColor = group.darkBorder;
 
   const desc = `${LABEL_DISPLAY_NAMES[label] ?? label}\n\n${LABEL_DESCRIPTIONS[label] ?? ''}`;
+  const showHint = llmHintsEnabled && llmVoteCount > 0;
+  const emphasisLevel = showHint ? Math.min(llmVoteCount, 3) : 0;
+
+  const notClickable = (disabled && !selected) || (inDoubtMode && !selected);
 
   return (
     <button
-      onClick={() => { if (!disabled) onToggle(); }}
+      onClick={() => { if (!notClickable) onToggle(); }}
       onMouseEnter={(e) => onHover(desc, e.currentTarget.getBoundingClientRect())}
       {...longPress}
       onMouseLeave={() => { onHover(null); longPress.onMouseLeave(); }}
       style={{
         minHeight: '44px',
         padding: '5px 10px',
-        background: disabled && !selected ? '#232A2E' : bg,
-        border: `${isLowConfidence ? '2.5px' : '1.5px'} ${isLowConfidence ? 'dashed' : 'solid'} ${disabled && !selected ? '#343F44' : borderColor}`,
+        background: notClickable ? '#232A2E' : bg,
+        border: `${isLowConfidence ? '2.5px' : '1.5px'} ${isLowConfidence ? 'dashed' : 'solid'} ${notClickable ? '#343F44' : borderColor}`,
         borderRadius: '22px',
-        color: disabled && !selected ? '#475258' : textColor,
+        color: notClickable ? '#475258' : textColor,
         fontSize: '12px',
         fontWeight: selected ? 600 : 400,
-        cursor: disabled && !selected ? 'not-allowed' : 'pointer',
+        cursor: notClickable ? 'not-allowed' : 'pointer',
         display: 'inline-flex',
         alignItems: 'center',
         gap: '4px',
         transition: 'all 0.1s',
         WebkitTapHighlightColor: 'transparent',
         whiteSpace: 'nowrap',
+        boxShadow: showHint
+          ? `0 0 0 ${emphasisLevel}px rgba(127,187,179,${0.15 + emphasisLevel * 0.1})`
+          : undefined,
       }}
     >
       {priority !== null && (
@@ -416,6 +427,25 @@ function LabelButton({
         </span>
       )}
       {LABEL_DISPLAY_NAMES[label] ?? label}
+      {showHint && (
+        <span
+          style={{
+            background: 'rgba(127,187,179,0.2)',
+            border: '1px solid rgba(127,187,179,0.5)',
+            borderRadius: '10px',
+            padding: '0 4px',
+            fontSize: '9px',
+            fontWeight: 800,
+            color: '#7FBBB3',
+            lineHeight: '14px',
+            minWidth: '14px',
+            textAlign: 'center',
+            flexShrink: 0,
+          }}
+        >
+          {llmVoteCount}
+        </span>
+      )}
     </button>
   );
 }
@@ -425,12 +455,18 @@ function LabelButton({
 function LabelPanel({
   currentLabels,
   currentConfidences,
+  inDoubtMode,
+  llmLabelVotes,
+  llmHintsEnabled,
   onToggle,
   onDescRequest,
   onHover,
 }: {
   currentLabels: string[];
   currentConfidences: Record<string, number>;
+  inDoubtMode: boolean;
+  llmLabelVotes: Record<string, number>;
+  llmHintsEnabled: boolean;
   onToggle: (label: string) => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -458,7 +494,7 @@ function LabelPanel({
               const idx = currentLabels.indexOf(label);
               const sel = idx !== -1;
               const pri = sel ? idx + 1 : null;
-              const dis = !sel && maxReached;
+              const dis = !sel && maxReached && !inDoubtMode;
               const isLow = currentConfidences[label] === 0;
               return (
                 <LabelButton
@@ -468,6 +504,9 @@ function LabelPanel({
                   selected={sel}
                   disabled={dis}
                   isLowConfidence={isLow}
+                  inDoubtMode={inDoubtMode}
+                  llmVoteCount={llmLabelVotes[label] ?? 0}
+                  llmHintsEnabled={llmHintsEnabled}
                   onToggle={() => onToggle(label)}
                   onDescRequest={onDescRequest}
                   onHover={onHover}
@@ -609,12 +648,16 @@ function scoreColor(v: number, selected: boolean): { bg: string; border: string;
 function ScoreButton({
   v,
   selected,
+  llmVoteCount,
+  llmHintsEnabled,
   onScore,
   onDescRequest,
   onHover,
 }: {
   v: number;
   selected: boolean;
+  llmVoteCount: number;
+  llmHintsEnabled: boolean;
   onScore: (v: number) => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -624,6 +667,7 @@ function ScoreButton({
   const longPress = useLongPress(() => {
     onDescRequest(desc);
   });
+  const showHint = llmHintsEnabled && llmVoteCount > 0;
   return (
     <button
       onClick={() => onScore(v)}
@@ -642,20 +686,47 @@ function ScoreButton({
         cursor: 'pointer',
         transition: 'all 0.1s',
         WebkitTapHighlightColor: 'transparent',
+        position: 'relative',
       }}
     >
       {v > 0 ? `+${v}` : v}
+      {showHint && (
+        <span
+          style={{
+            position: 'absolute',
+            top: '-5px',
+            right: '-5px',
+            background: '#7FBBB3',
+            borderRadius: '50%',
+            width: '15px',
+            height: '15px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '8px',
+            fontWeight: 800,
+            color: '#2D353B',
+            pointerEvents: 'none',
+          }}
+        >
+          {llmVoteCount}
+        </span>
+      )}
     </button>
   );
 }
 
 function SafetyScorePanel({
   currentScore,
+  llmScoreVotes,
+  llmHintsEnabled,
   onScore,
   onDescRequest,
   onHover,
 }: {
   currentScore: number | undefined;
+  llmScoreVotes: Record<string, number>;
+  llmHintsEnabled: boolean;
   onScore: (score: number) => void;
   onDescRequest: (text: string) => void;
   onHover: (text: string | null, rect?: DOMRect) => void;
@@ -680,6 +751,8 @@ function SafetyScorePanel({
             key={v}
             v={v}
             selected={currentScore === v}
+            llmVoteCount={llmScoreVotes[String(v)] ?? 0}
+            llmHintsEnabled={llmHintsEnabled}
             onScore={onScore}
             onDescRequest={onDescRequest}
             onHover={onHover}
@@ -770,6 +843,9 @@ interface Props {
   sentenceScores: Record<number, number>;
   sentenceConfidences: Record<number, Record<string, number>>;
   currentProgress?: EntryProgress | null;
+  llmHintsEnabled: boolean;
+  llmLabelVotes: Record<string, number>;
+  llmScoreVotes: Record<string, number>;
   onLabelSentence: (labels: string[]) => void;
   onToggleConfidence: (label: string) => void;
   onScoreSentence: (score: number) => void;
@@ -777,6 +853,7 @@ interface Props {
   onJumpToSentence: (idx: number) => void;
   onSubmitAssessment: (assessment: Assessment) => void;
   onShowStats: () => void;
+  onToggleLlmHints: () => void;
   allDone: boolean;
 }
 
@@ -790,6 +867,9 @@ export default function Labeler({
   sentenceScores,
   sentenceConfidences,
   currentProgress,
+  llmHintsEnabled,
+  llmLabelVotes,
+  llmScoreVotes,
   onLabelSentence,
   onToggleConfidence,
   onScoreSentence,
@@ -797,12 +877,14 @@ export default function Labeler({
   onJumpToSentence,
   onSubmitAssessment,
   onShowStats,
+  onToggleLlmHints,
   allDone,
 }: Props) {
   const [descTooltip, setDescTooltip] = useState<string | null>(null);
   const [hoverTooltip, setHoverTooltip] = useState<{ text: string; rect: DOMRect } | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [splitPct, setSplitPct] = useState(50);
+  const [doubtMode, setDoubtMode] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // Assessment state
@@ -824,6 +906,11 @@ export default function Labeler({
       turning_point: currentProgress?.assessment?.turning_point ?? -1,
     });
   }, [entry.id, currentProgress]);
+
+  // Reset doubt mode when moving to a different sentence or entry
+  useEffect(() => {
+    setDoubtMode(false);
+  }, [sentenceIndex, entry.id]);
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement);
@@ -857,6 +944,11 @@ export default function Labeler({
 
   const handleToggle = useCallback(
     (label: string) => {
+      if (doubtMode) {
+        const idx = currentLabels.indexOf(label);
+        if (idx !== -1) onToggleConfidence(label);
+        return;
+      }
       const idx = currentLabels.indexOf(label);
       if (idx === -1) {
         if (currentLabels.length >= 3) return;
@@ -865,11 +957,8 @@ export default function Labeler({
         onLabelSentence(currentLabels.filter((l) => l !== label));
       }
     },
-    [currentLabels, onLabelSentence],
+    [doubtMode, currentLabels, onLabelSentence, onToggleConfidence],
   );
-
-  const lastLabel = currentLabels[currentLabels.length - 1];
-  const isLowConfidence = lastLabel ? currentConfidences[lastLabel] === 0 : false;
 
   const handleJump = useCallback((idx: number) => {
     if (isAssessing) {
@@ -942,6 +1031,26 @@ export default function Labeler({
               }} />
             </div>
           </div>
+          <button
+            onClick={onToggleLlmHints}
+            title={llmHintsEnabled ? 'LLM hints on — click to turn off' : 'LLM hints off — click to turn on'}
+            style={{
+              minHeight: '36px',
+              padding: '0 10px',
+              background: llmHintsEnabled ? 'rgba(127,187,179,0.15)' : '#343F44',
+              border: `1px solid ${llmHintsEnabled ? '#7FBBB3' : '#475258'}`,
+              borderRadius: '8px',
+              color: llmHintsEnabled ? '#7FBBB3' : '#9DA9A0',
+              fontSize: '11px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              WebkitTapHighlightColor: 'transparent',
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.02em',
+            }}
+          >
+            LLM hints
+          </button>
           <button
             onClick={onShowStats}
             style={{
@@ -1129,11 +1238,19 @@ export default function Labeler({
                   overflowY: 'auto',
                   padding: '8px 12px',
                   minHeight: 0,
+                  cursor: doubtMode ? 'crosshair' : undefined,
+                  outline: doubtMode ? '2px solid rgba(219,188,127,0.45)' : undefined,
+                  outlineOffset: doubtMode ? '-2px' : undefined,
+                  borderRadius: doubtMode ? '4px' : undefined,
+                  transition: 'outline 0.15s',
                 }}
               >
                 <LabelPanel
                   currentLabels={currentLabels}
                   currentConfidences={currentConfidences}
+                  inDoubtMode={doubtMode}
+                  llmLabelVotes={llmLabelVotes}
+                  llmHintsEnabled={llmHintsEnabled}
                   onToggle={handleToggle}
                   onDescRequest={(text) => setDescTooltip(text)}
                   onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
@@ -1151,38 +1268,40 @@ export default function Labeler({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '6px' }}>
                   <SafetyScorePanel
                     currentScore={currentScore}
+                    llmScoreVotes={llmScoreVotes}
+                    llmHintsEnabled={llmHintsEnabled}
                     onScore={onScoreSentence}
                     onDescRequest={(text) => setDescTooltip(text)}
                     onHover={(text, rect) => setHoverTooltip(text && rect ? { text, rect } : null)}
                   />
                   <div
                     onMouseEnter={(e) => {
-                      const msg = lastLabel 
-                        ? `Flag '${LABEL_DISPLAY_NAMES[lastLabel] || lastLabel}' as low confidence (score 0).\n\nUse this if you are unsure that the behavior label fully applies to this sentence.` 
-                        : 'Low Confidence Toggle\n\nSelect a behavior label first to use this toggle. It applies to the most recently selected label.';
+                      const msg = doubtMode
+                        ? 'Doubt mode is ON.\n\nClick any selected behavior label to mark it as uncertain. The label gets a dashed border. Click again to remove doubt.\n\nClick here to exit doubt mode.'
+                        : 'Doubt mode\n\nActivate to mark selected labels as uncertain. Click a selected label to toggle its doubt state.';
                       setHoverTooltip({ text: msg, rect: e.currentTarget.getBoundingClientRect() });
                     }}
                     onMouseLeave={() => setHoverTooltip(null)}
                     style={{ marginLeft: '12px' }}
                   >
                     <button
-                      onClick={() => { if (lastLabel) onToggleConfidence(lastLabel); }}
-                      disabled={!lastLabel}
+                      onClick={() => setDoubtMode((d) => !d)}
                       style={{
                         padding: '4px 14px',
                         minHeight: '40px',
-                        background: isLowConfidence ? 'rgba(230,126,128,0.15)' : '#343F44',
-                        border: `${isLowConfidence ? '2.5px' : '1.5px'} ${isLowConfidence ? 'dashed' : 'solid'} ${isLowConfidence ? '#E67E80' : '#475258'}`,
+                        background: doubtMode ? 'rgba(219,188,127,0.15)' : '#343F44',
+                        border: `${doubtMode ? '2.5px' : '1.5px'} ${doubtMode ? 'dashed' : 'solid'} ${doubtMode ? '#DBBC7F' : '#475258'}`,
                         borderRadius: '8px',
-                        color: isLowConfidence ? '#E67E80' : lastLabel ? '#9DA9A0' : '#475258',
+                        color: doubtMode ? '#DBBC7F' : '#9DA9A0',
                         fontSize: '11px',
                         fontWeight: 700,
-                        cursor: lastLabel ? 'pointer' : 'not-allowed',
+                        cursor: 'pointer',
                         transition: 'all 0.1s',
-                        pointerEvents: 'none', // Let the wrapper handle hover
+                        pointerEvents: 'none',
+                        whiteSpace: 'nowrap',
                       }}
                     >
-                      Low confidence
+                      {doubtMode ? 'Doubt: ON' : 'Doubt mode'}
                     </button>
                   </div>
                 </div>

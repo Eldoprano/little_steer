@@ -109,6 +109,8 @@ export interface PersistedState {
   currentEntryIndex: number;
   /** Which sentence within that entry is currently being labeled. */
   currentSentenceIndex: number;
+  /** Whether LLM hint badges and pre-selection are shown (default true). */
+  llmHintsEnabled: boolean;
 }
 
 /** A sentence extracted from the LLM annotations, ready to display. */
