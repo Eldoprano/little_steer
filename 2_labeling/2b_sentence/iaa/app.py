@@ -19,6 +19,7 @@ from flask import Flask, jsonify, render_template, request
 from iaa.compute import (
     MODES,
     compute_agreement_matrix,
+    compute_krippendorff_alpha,
     count_shared_all,
     load_iaa_data,
 )
@@ -123,6 +124,35 @@ def api_shared():
     selected: list[str] = body.get("annotators", [])
     count = count_shared_all(ed, selected)
     return jsonify({"shared": count})
+
+
+@app.route("/api/alpha", methods=["POST"])
+def api_alpha():
+    """Compute Krippendorff's alpha for the selected annotators.
+
+    Recommended over pairwise kappa when 3+ annotators are selected.
+    With ~25 human annotations expect wide confidence intervals.
+    """
+    with _lock:
+        if _state["loading"]:
+            return jsonify({"loading": True}), 202
+        if _state["error"]:
+            return jsonify({"error": _state["error"]}), 500
+        ed = _state["entry_data"]
+
+    body = request.json or {}
+    selected: list[str] = body.get("annotators", [])
+    mode: str = body.get("mode", "score")
+    if mode not in MODES:
+        mode = "score"
+
+    if len(selected) < 2:
+        return jsonify({"alpha": None, "n_coincidences": 0, "total_chars": 0, "mode": mode})
+
+    with _lock:
+        result = compute_krippendorff_alpha(ed, selected, mode)
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":
