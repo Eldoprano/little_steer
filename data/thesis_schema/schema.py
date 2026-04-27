@@ -259,6 +259,25 @@ class ConversationEntry(BaseModel):
         if activate:
             self.set_active_label_run(run)
 
+    def activate_judge(self, judge_name: str) -> bool:
+        """Set entry.annotations to the most recent run from a specific judge.
+
+        Must be called before passing this entry to the representation extractor
+        (Step 3), which reads entry.annotations.  With multiple concurrent judges
+        upsert_label_run activates whichever judge wrote last — non-deterministic.
+        Call this explicitly to pin a preferred judge (default: gpt-mini).
+
+        Matching is by prefix so 'gpt-mini' matches 'gpt-mini_pass2' etc.
+        Returns True if a matching run was found and activated, False otherwise.
+        """
+        matching = [r for r in self.label_runs if r.judge_name == judge_name
+                    or r.judge_name.startswith(judge_name + "_")]
+        if not matching:
+            return False
+        best = max(matching, key=lambda r: r.labeled_at)
+        self.set_active_label_run(best)
+        return True
+
     def upsert_safety_run(self, run: SafetyRun) -> None:
         """Insert or replace a safety run by canonical run key."""
         self.safety_runs = [existing for existing in self.safety_runs if existing.key != run.key]
