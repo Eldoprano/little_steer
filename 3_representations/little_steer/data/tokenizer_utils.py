@@ -344,7 +344,7 @@ def _model_supports_thinking(tokenizer: PreTrainedTokenizerBase) -> bool:
     model_name = getattr(tokenizer, "name_or_path", "") or ""
     model_name_lower = model_name.lower()
 
-    thinking_indicators = ["qwen3", "deepseek-r1", "qwq", "deepseek-reasoner"]
+    thinking_indicators = ["qwen3", "deepseek-r1", "qwq", "deepseek-reasoner", "phi-4", "ministral", "magistral", "gemma-4"]
     if any(ind in model_name_lower for ind in thinking_indicators):
         return True
 

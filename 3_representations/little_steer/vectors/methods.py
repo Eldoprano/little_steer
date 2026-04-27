@@ -34,6 +34,13 @@ class MeanDifference:
     """Steering vector = target mean − baseline mean.
 
     Classic contrastive pair. Requires a specific baseline category.
+
+    Note on standardization: this method operates in raw activation space.
+    High-variance dimensions will dominate the direction. For steering this is
+    intentional — the scale of each dimension carries meaning. If you want a
+    scale-invariant direction (e.g. for probing / cosine-similarity analysis),
+    use LinearProbe instead, which normalizes internally and then projects the
+    weight back to raw space.
     """
 
     @staticmethod
@@ -90,6 +97,14 @@ class PCADirection:
 
     Captures the direction of maximum variance in the target category's
     activation subspace.
+
+    Note on standardization: PCA is sensitive to feature scale. By default
+    `center=True` removes the mean, but dimensions are NOT divided by std.
+    This means high-variance dimensions dominate the first component, which
+    is the conventional choice for RepE steering (the raw scale reflects
+    the actual spread in activation space). If you want scale-invariant
+    principal directions (e.g. for cross-layer or cross-model comparison),
+    pre-standardize the tensors before passing them in.
     """
 
     @staticmethod
@@ -161,7 +176,12 @@ class LinearProbe:
         )
         clf.fit(X_scaled, y)
 
-        weight = torch.from_numpy(clf.coef_[0].copy()).float()
+        # The probe was trained on standardized features: score = w_scaled · (X - μ)/σ + b.
+        # During steering we add the vector directly to raw activations, so we must
+        # project back: w_raw = w_scaled / σ.  This preserves the decision boundary
+        # direction in the original (unscaled) activation space.
+        weight_raw = clf.coef_[0] / scaler.scale_
+        weight = torch.from_numpy(weight_raw.astype(np.float32))
 
         if normalize:
             weight = weight / (weight.norm() + 1e-8)
