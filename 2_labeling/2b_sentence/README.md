@@ -278,24 +278,109 @@ Available configs:
 
 ## Output format
 
-Each output JSONL file contains `ConversationEntry` objects with `annotations` populated. Each `AnnotatedSpan` covers one sentence:
+The shared dataset lives at `data/dataset.jsonl`. Each line is a JSON object following the `ConversationEntry` schema defined in `data/thesis_schema/schema.py`.
+
+### ConversationEntry (top-level)
 
 ```json
 {
   "id": "a3f1c8e2b9d04712",
-  "messages": [...],
-  "annotations": [
-    {
-      "text": "I should not help with this request.",
-      "message_idx": 2,
-      "char_start": 0,
-      "char_end": 37,
-      "labels": ["IV_INTEND_REFUSAL"],
-      "score": 0.95
-    }
-  ]
+  "model": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+  "judge": "gpt-5.4-mini",
+  "messages": [
+    {"role": "system",    "content": "..."},
+    {"role": "user",      "content": "..."},
+    {"role": "reasoning", "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ],
+  "annotations": [ ... ],
+  "metadata": {
+    "dataset": "hf",
+    "generation_hash": "a3f1c8e2b9d04712",
+    "active_label_run": "gpt-5.4-mini::v6::a3f1c8e2b9d04712",
+    "assessment": { "trajectory": "concern_then_refuse", "alignment": "aligned", "turning_point": 3 },
+    "labeled_at": "2025-06-01T12:00:00+00:00",
+    "taxonomy_version": "v6"
+  },
+  "label_runs": [ ... ],
+  "safety_runs": [ ... ]
 }
 ```
+
+**Message roles:**
+- `system` — system prompt (optional)
+- `user` — the harmful request prompt
+- `reasoning` — chain-of-thought content (model-agnostic, no `<think>` tokens)
+- `assistant` — final model response
+
+### LabelRun
+
+Each entry in `label_runs` is one complete labeling pass by one judge:
+
+```json
+{
+  "judge_name": "gpt-5.4-mini",
+  "judge_model_id": "gpt-5.4-mini-2025-08-07",
+  "taxonomy_version": "v6",
+  "labeled_at": "2025-06-01T12:00:00+00:00",
+  "generation_hash": "a3f1c8e2b9d04712",
+  "reasoning_truncated": false,
+  "assessment": {
+    "trajectory": "concern_then_refuse",
+    "alignment": "aligned",
+    "turning_point": 3
+  },
+  "sentence_annotations": [
+    {
+      "text": "I should not help with this.",
+      "labels": ["IV_INTEND_REFUSAL"],
+      "safety_score": 1,
+      "label_logprobs": { "IV_INTEND_REFUSAL": [-0.12, -0.03] }
+    }
+  ],
+  "spans": [ ... ],
+  "usage": { "prompt_tokens": 1200, "completion_tokens": 400 },
+  "finish_reason": "stop",
+  "status": "completed"
+}
+```
+
+`label_runs[].key` = `"judge_name::taxonomy_version::generation_hash"` — unique identifier for one labeling pass.
+
+`sentence_annotations` is the raw LLM output (sentence-level, before span mapping). `label_logprobs` stores per-token log-probabilities for each label string as returned by the judge.
+
+### AnnotatedSpan
+
+`annotations` (active run) and `label_runs[].spans` share this structure:
+
+```json
+{
+  "text": "I should not help with this request.",
+  "message_idx": 2,
+  "char_start": 0,
+  "char_end": 37,
+  "labels": ["IV_INTEND_REFUSAL"],
+  "score": 1,
+  "meta": {
+    "judge_text": "I should not help with this.",
+    "sentence_index": 4
+  }
+}
+```
+
+`message_idx` points into the `messages` array (0-indexed). `char_start`/`char_end` are byte-offsets within that message's `content`. `score` is −1 / 0 / 1.
+
+### Dataset stats (as of 2026-04-24)
+
+| Metric | Value |
+|--------|-------|
+| Total entries | 13,194 |
+| Entries with label runs | 3,555 |
+| Avg label runs per labeled entry | 2.1 |
+| Total annotators | 21 |
+| Human annotators | 1 (`human_antstudent`) |
+| Unique datasets | `hf` (all from HuggingFace) |
+| IAA work order size | 192 entries |
 
 ## Resumability
 
@@ -303,6 +388,52 @@ Each output file has a companion `.checkpoint.json` file. Re-running the same co
 
 ```bash
 uv run run.py --reset-checkpoints ../../data/1_generated/
+```
+
+## Advanced: multi-pass and backfill
+
+**Multiple independent passes** — use `--pass N` to store a second (or third) independent labeling run from the same judge. Pass >1 appends `_pass<N>` to the judge name so results are stored separately:
+
+```bash
+# First pass (default)
+uv run run_all.py data/dataset.jsonl
+
+# Second independent pass (results stored as e.g. gpt-mini_pass2)
+uv run run_all.py --pass 2 data/dataset.jsonl
+```
+
+Use `ConversationEntry.activate_judge("gpt-mini")` (prefix match) to pick which pass to expose as active annotations when running downstream steps.
+
+**Backfill missing logprobs** — re-label only entries that already have a run for a judge but are missing `label_logprobs`:
+
+```bash
+uv run run_all.py --backfill-logprobs data/dataset.jsonl
+```
+
+This is safe to run on a fully-labeled dataset; it skips entries where logprobs are already present.
+
+## IAA Experiments
+
+Inter-Annotator Agreement analysis for the `work_order_iaa.json` set (192 balanced entries).
+
+```bash
+# Interactive marimo notebook (recommended)
+uv run marimo edit iaa/iaa_notebook.py
+
+# Or run in read-only mode
+uv run marimo run iaa/iaa_notebook.py
+```
+
+The notebook lets you:
+- Select any subset of annotators (AI judges + humans)
+- Compute pairwise Cohen's κ matrix (score / primary_label / label_set modes)
+- Compute Krippendorff's α across all selected annotators
+- Visualise label and score distributions per annotator
+- Drill down into individual entries to compare spans side-by-side
+
+The Flask-based IAA viewer is also available:
+```bash
+uv run python iaa/app.py  # → http://localhost:5051
 ```
 
 ## Utility scripts
@@ -324,3 +455,7 @@ uv run run.py --reset-checkpoints ../../data/1_generated/
 | `compare_api.yaml` | Multi-judge: cloud API models |
 | `compare_local.yaml` | Multi-judge: local LMStudio models |
 | `AGENTS.md` | Developer & AI agent conventions |
+| `iaa/iaa_notebook.py` | **Marimo IAA notebook** — interactive agreement analysis |
+| `iaa/app.py` | Flask IAA viewer (port 5051) |
+| `iaa/compute.py` | Cohen's κ and Krippendorff's α computation |
+| `work_order_iaa.json` | Balanced IAA entry list (192 entries, 4 model pairs, 3 datasets) |

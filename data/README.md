@@ -60,6 +60,15 @@ Important metadata:
 | `score` | `float` | Judge-provided score / safety weight |
 | `meta` | `dict` | Extra metadata such as sentence index or original judge text |
 
+### Key methods on `ConversationEntry`
+
+| Method | Description |
+|---|---|
+| `upsert_label_run(run, activate=True)` | Insert or replace a label run; activates the new run by default |
+| `activate_judge(judge_name)` | Pin a specific judge as active (prefix match — `"gpt-mini"` matches `"gpt-mini_pass2"`). Call before passing to step 3. Returns `True` if found. |
+| `set_active_label_run(run)` | Mirror a specific `LabelRun` into `entry.annotations` |
+| `upsert_safety_run(run)` | Insert or replace a safety run by canonical key |
+
 ### `LabelRun`
 
 Stores one labeling pass for a specific `(judge_name, taxonomy_version, generation_hash)`.
