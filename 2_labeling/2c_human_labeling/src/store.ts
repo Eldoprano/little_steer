@@ -38,7 +38,7 @@ export function clearEntries(): void {
 // ── Progress storage ─────────────────────────────────────────────────────────
 
 export function defaultProgress(): PersistedState {
-  return { handle: null, progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0, llmHintsEnabled: true };
+  return { handle: null, progress: {}, currentEntryIndex: 0, currentSentenceIndex: 0, llmHintsEnabled: true, showGamification: true };
 }
 
 /** Migrate old progress records that lack sentenceScores or sentenceConfidences. */
@@ -51,7 +51,7 @@ function migrateProgress(p: PersistedState): PersistedState {
       sentenceConfidences: ep.sentenceConfidences ?? {}
     };
   }
-  return { ...p, handle: p.handle ?? null, progress: migrated, llmHintsEnabled: p.llmHintsEnabled ?? true };
+  return { ...p, handle: p.handle ?? null, progress: migrated, llmHintsEnabled: p.llmHintsEnabled ?? true, showGamification: p.showGamification ?? true };
 }
 
 export function saveProgress(state: PersistedState): void {
@@ -222,9 +222,11 @@ export function computeLlmHints(
   sentences: ReturnType<typeof getSentences>,
 ): {
   labelVotes: Record<number, Record<string, number>>;
+  labelPoints: Record<number, Record<string, number>>;
   scoreVotes: Record<number, Record<string, number>>;
 } {
   const labelVotes: Record<number, Record<string, number>> = {};
+  const labelPoints: Record<number, Record<string, number>> = {};
   const scoreVotes: Record<number, Record<string, number>> = {};
 
   const reasoningIdx = entry.messages.findIndex((m) => m.role === 'reasoning');
@@ -245,12 +247,17 @@ export function computeLlmHints(
       if (overlapping.length === 0) continue;
 
       if (!labelVotes[sent.index]) labelVotes[sent.index] = {};
+      if (!labelPoints[sent.index]) labelPoints[sent.index] = {};
       if (!scoreVotes[sent.index]) scoreVotes[sent.index] = {};
 
       for (const sp of overlapping) {
-        for (const lbl of sp.labels ?? []) {
+        const labels = sp.labels ?? [];
+        for (let i = 0; i < labels.length; i++) {
+          const lbl = labels[i];
           if (lbl && lbl !== 'none') {
             labelVotes[sent.index][lbl] = (labelVotes[sent.index][lbl] ?? 0) + 1;
+            const points = Math.max(1, 3 - i);
+            labelPoints[sent.index][lbl] = (labelPoints[sent.index][lbl] ?? 0) + points;
           }
         }
         if (typeof sp.score === 'number') {
@@ -261,7 +268,7 @@ export function computeLlmHints(
     }
   }
 
-  return { labelVotes, scoreVotes };
+  return { labelVotes, labelPoints, scoreVotes };
 }
 
 // ── Export helpers ───────────────────────────────────────────────────────────
@@ -282,6 +289,7 @@ export function buildHumanLabeledEntry(
   },
   handle: string,
   llmHintsEnabled: boolean = true,
+  status: string = 'completed',
 ): ConversationEntry {
   const sentences = getSentences(original);
 
@@ -336,6 +344,7 @@ export function buildHumanLabeledEntry(
       human_labeled: true,
       judge_name: judgeName,
       llm_hints_enabled: llmHintsEnabled,
+      status,
     },
   };
 }
@@ -394,7 +403,8 @@ export function exportAsJsonl(
     sentenceScores: Record<number, number>;
     sentenceConfidences: Record<number, Record<string, number>>;
     assessment?: { trajectory: string; turning_point: number; alignment: string };
-    completed: boolean
+    completed: boolean;
+    status?: string;
   }>,
   handle: string,
   llmHintsEnabled: boolean = true,
@@ -411,6 +421,7 @@ export function exportAsJsonl(
       prog.assessment,
       handle,
       llmHintsEnabled,
+      prog.status ?? 'completed',
     );
     lines.push(JSON.stringify(humanEntry));
   }

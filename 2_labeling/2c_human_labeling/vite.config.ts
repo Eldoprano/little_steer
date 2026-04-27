@@ -153,12 +153,29 @@ export default defineConfig({
                         reasoning_truncated: false,
                         assessment: labelRunEntry.metadata.assessment,
                         spans: labelRunEntry.annotations,
-                        status: 'completed'
+                        status: labelRunEntry.metadata.status || 'completed'
                       }
                       
                       // Remove existing run from same human if any (overwrite)
                       e.label_runs = e.label_runs.filter((r: any) => r.judge_name !== newRun.judge_name)
                       e.label_runs.push(newRun)
+
+                      // If marked as broken, update metadata so fix_quality.py can see it
+                      if (newRun.status === 'error') {
+                        e.metadata.approved = false
+                        if (!e.metadata.quality) {
+                          e.metadata.quality = {
+                            issues: [],
+                            approved: false,
+                            checked_at: new Date().toISOString()
+                          }
+                        }
+                        e.metadata.quality.approved = false
+                        if (!e.metadata.quality.issues.includes('human_broken')) {
+                          e.metadata.quality.issues.push('human_broken')
+                        }
+                      }
+
                       return JSON.stringify(e)
                     }
                   } catch {}

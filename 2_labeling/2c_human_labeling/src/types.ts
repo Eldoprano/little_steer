@@ -97,6 +97,7 @@ export interface EntryProgress {
   /** Filled in when the user submits the assessment form. */
   assessment?: Assessment;
   completed: boolean;
+  status?: string;
 }
 
 /** App-level persisted state stored in localStorage. */
@@ -111,6 +112,8 @@ export interface PersistedState {
   currentSentenceIndex: number;
   /** Whether LLM hint badges and pre-selection are shown (default true). */
   llmHintsEnabled: boolean;
+  /** Whether to show the gamification agreement graph after each entry (default true). */
+  showGamification: boolean;
 }
 
 /** A sentence extracted from the LLM annotations, ready to display. */

@@ -18,8 +18,14 @@ import DataLoader from './components/DataLoader';
 import Labeler from './components/Labeler';
 import StatsView from './components/StatsView';
 import IdentityScreen from './components/IdentityScreen';
+import GamificationModal from './components/GamificationModal';
+import {
+  LABEL_DISPLAY_NAMES,
+  getLabelGroup,
+  LABEL_WEIGHTS,
+} from './taxonomy';
 
-type Screen = 'labeling' | 'stats';
+type Screen = 'labeling' | 'stats' | 'gamification';
 
 export default function App() {
   const [entries, setEntries] = useState<ConversationEntry[]>(() => loadEntries() ?? []);
@@ -230,39 +236,6 @@ export default function App() {
     }
   }, [appState.handle, entries.length, isLoading, handleLoad]);
 
-  // Pre-populate labels from LLM votes when entering a fresh sentence with hints on
-  useEffect(() => {
-    if (!currentEntry || !appState.llmHintsEnabled || !llmHints) return;
-    const sentIdx = appState.currentSentenceIndex;
-    const entryId = currentEntry.id;
-    const votes: Record<string, number> = llmHints.labelVotes[sentIdx] ?? {};
-    const preSelected = Object.entries(votes)
-      .filter(([, c]) => (c as number) > 0)
-      .sort(([, a], [, b]) => (b as number) - (a as number))
-      .slice(0, 3)
-      .map(([l]) => l);
-    if (preSelected.length === 0) return;
-
-    setAppState((prev) => {
-      const ep = prev.progress[entryId] ?? {
-        sentenceLabels: {},
-        sentenceScores: {},
-        sentenceConfidences: {},
-        completed: false,
-      };
-      if (ep.sentenceLabels[sentIdx] !== undefined) return prev;
-      return {
-        ...prev,
-        progress: {
-          ...prev.progress,
-          [entryId]: {
-            ...ep,
-            sentenceLabels: { ...ep.sentenceLabels, [sentIdx]: preSelected },
-          },
-        },
-      };
-    });
-  }, [appState.currentSentenceIndex, currentEntry?.id, appState.llmHintsEnabled, llmHints]);
 
   const handleLabelSentence = useCallback(
     (labels: string[]) => {
@@ -365,10 +338,29 @@ export default function App() {
             sentenceConfidences: {},
             completed: false 
           };
-          const currentLabels = ep.sentenceLabels[idx];
-          const currentScore = ep.sentenceScores[idx];
+          let currentLabels = ep.sentenceLabels[idx];
+          let currentScore = ep.sentenceScores[idx];
           
           if (currentLabels === undefined || currentScore === undefined) {
+            if (currentLabels === undefined && prev.llmHintsEnabled && llmHints) {
+              const votes = llmHints.labelVotes[idx] ?? {};
+              const pointsMap = llmHints.labelPoints[idx] ?? {};
+              const preSelected = Object.entries(votes)
+                .filter(([, c]) => (c as number) > 0)
+                .sort(([labelA], [labelB]) => {
+                  const ptsA = pointsMap[labelA] ?? 0;
+                  const ptsB = pointsMap[labelB] ?? 0;
+                  // Weighted score: 1000 points per point + taxonomy weight tie-breaker
+                  const scoreA = ptsA * 1000 + (LABEL_WEIGHTS[labelA] ?? 0);
+                  const scoreB = ptsB * 1000 + (LABEL_WEIGHTS[labelB] ?? 0);
+                  return scoreB - scoreA;
+                })
+                .slice(0, 3)
+                .map(([l]) => l);
+              if (preSelected.length > 0) {
+                currentLabels = preSelected;
+              }
+            }
             return {
               ...prev,
               currentSentenceIndex: nextIdx,
@@ -386,12 +378,41 @@ export default function App() {
         return { ...prev, currentSentenceIndex: nextIdx };
       });
     },
-    [sentences.length, currentEntry],
+    [sentences.length, currentEntry, llmHints],
   );
 
   const handleJump = useCallback((idx: number) => {
     setAppState((prev) => ({ ...prev, currentSentenceIndex: idx }));
   }, []);
+
+  const handleAdvanceEntry = useCallback(() => {
+    setAppState((prev) => {
+      // Find the next incomplete entry, starting from the current position
+      let nextIdx = (prev.currentEntryIndex + 1) % entries.length;
+      let checkedCount = 0;
+      while (
+        checkedCount < entries.length && 
+        prev.progress[entries[nextIdx].id]?.completed
+      ) {
+        nextIdx = (nextIdx + 1) % entries.length;
+        checkedCount++;
+      }
+
+      if (checkedCount === entries.length) {
+        console.log('[Submit] All entries completed!');
+        nextIdx = entries.length; // Signal all done
+      } else {
+        console.log(`[Submit] Moving to next entry index: ${nextIdx}`);
+      }
+
+      return {
+        ...prev,
+        currentEntryIndex: nextIdx,
+        currentSentenceIndex: 0,
+      };
+    });
+    setScreen('labeling');
+  }, [entries]);
 
   const handleSubmitAssessment = useCallback(
     async (assessment: Assessment) => {
@@ -433,34 +454,76 @@ export default function App() {
           [currentEntry.id]: { ...currentEp, assessment, completed: true },
         };
 
-        // Find the next incomplete entry, starting from the current position
-        let nextIdx = (prev.currentEntryIndex + 1) % entries.length;
-        let checkedCount = 0;
-        while (
-          checkedCount < entries.length && 
-          newProgress[entries[nextIdx].id]?.completed
-        ) {
-          nextIdx = (nextIdx + 1) % entries.length;
-          checkedCount++;
-        }
-
-        if (checkedCount === entries.length) {
-          console.log('[Submit] All entries completed!');
-          nextIdx = entries.length; // Signal all done
-        } else {
-          console.log(`[Submit] Moving to next entry index: ${nextIdx}`);
-        }
-
         return {
           ...prev,
-          currentEntryIndex: nextIdx,
-          currentSentenceIndex: 0,
           progress: newProgress,
         };
       });
-      setScreen('labeling');
+
+      if (appState.showGamification) {
+        setScreen('gamification');
+      } else {
+        handleAdvanceEntry();
+      }
     },
-    [currentEntry, entries, appState.handle, appState.progress],
+    [currentEntry, appState.handle, appState.progress, appState.showGamification, appState.llmHintsEnabled, handleAdvanceEntry],
+  );
+
+  const handleMarkBroken = useCallback(
+    async () => {
+      if (!currentEntry || !appState.handle) return;
+      if (!window.confirm('Are you sure you want to mark this entry as broken?')) return;
+      
+      console.log(`[Submit] Marking assessment for ${currentEntry.id} as broken`);
+
+      const ep = appState.progress[currentEntry.id] ?? { 
+        sentenceLabels: {}, 
+        sentenceScores: {}, 
+        sentenceConfidences: {},
+        completed: false 
+      };
+      
+      // Pass a default assessment to pass frontend checks, but status = 'error' is the main signal
+      const mockAssessment = { trajectory: 'ambiguous', turning_point: -1, alignment: 'ambiguous' } as any;
+
+      const labeledEntry = buildHumanLabeledEntry(
+        currentEntry,
+        ep.sentenceLabels,
+        ep.sentenceScores,
+        ep.sentenceConfidences ?? {},
+        mockAssessment,
+        appState.handle,
+        appState.llmHintsEnabled,
+        'error',
+      );
+
+      try {
+        const resp = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(labeledEntry),
+        });
+        if (!resp.ok) console.error('Failed to save to backend');
+      } catch (err) {
+        console.error('Error saving to backend:', err);
+      }
+
+      setAppState((prev) => {
+        const currentEp = prev.progress[currentEntry.id] ?? { sentenceLabels: {}, sentenceScores: {}, completed: false };
+        const newProgress = {
+          ...prev.progress,
+          [currentEntry.id]: { ...currentEp, assessment: mockAssessment, completed: true, status: 'error' },
+        };
+
+        return {
+          ...prev,
+          progress: newProgress,
+        };
+      });
+
+      handleAdvanceEntry();
+    },
+    [currentEntry, appState.handle, appState.progress, appState.llmHintsEnabled, handleAdvanceEntry],
   );
 
   const handleReset = useCallback(() => {
@@ -549,6 +612,7 @@ export default function App() {
     <>
       {currentEntry ? (
         <Labeler
+          handle={appState.handle || 'Unknown'}
           entry={currentEntry}
           entryIndex={appState.currentEntryIndex}
           totalEntries={totalExpectedCount || entries.length}
@@ -560,6 +624,7 @@ export default function App() {
           currentProgress={currentProgress}
           llmHintsEnabled={appState.llmHintsEnabled}
           llmLabelVotes={llmHints?.labelVotes[appState.currentSentenceIndex] ?? {}}
+          llmLabelPoints={llmHints?.labelPoints[appState.currentSentenceIndex] ?? {}}
           llmScoreVotes={llmHints?.scoreVotes[appState.currentSentenceIndex] ?? {}}
           onLabelSentence={handleLabelSentence}
           onToggleConfidence={handleToggleConfidence}
@@ -569,6 +634,7 @@ export default function App() {
           onSubmitAssessment={handleSubmitAssessment}
           onShowStats={() => setScreen('stats')}
           onToggleLlmHints={handleToggleLlmHints}
+          onMarkBroken={handleMarkBroken}
           allDone={allSentencesLabeled}
         />
       ) : (
@@ -588,6 +654,18 @@ export default function App() {
           onReset={handleReset}
           onClearData={handleClearAll}
           onSelectEntry={handleSelectEntry}
+        />
+      )}
+
+      {screen === 'gamification' && currentEntry && (
+        <GamificationModal
+          entry={currentEntry}
+          progress={appState.progress[currentEntry.id]}
+          onNext={handleAdvanceEntry}
+          onDisable={() => {
+            setAppState(prev => ({ ...prev, showGamification: false }));
+            handleAdvanceEntry();
+          }}
         />
       )}
 

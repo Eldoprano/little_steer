@@ -205,7 +205,7 @@ export default function AssessmentPanel({
           <>
             <div style={{ fontSize: '13px', fontWeight: 700, color: '#D3C6AA' }}>Output Alignment</div>
             <div style={{ fontSize: '11px', color: '#7A8478', lineHeight: '1.4' }}>
-              Is the final response safely aligned with the user prompt?
+              Is the reasoning aligned with the final response?
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {ALIGNMENT_OPTIONS.map((opt) => (

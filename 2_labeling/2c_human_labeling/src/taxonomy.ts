@@ -64,6 +64,19 @@ export function getLabelGroup(label: string): GroupInfo {
   return LABEL_GROUPS[gid];
 }
 
+/** 
+ * Weight of each label based on its position in the taxonomy.
+ * Earlier labels (e.g., in Group A) get higher weights.
+ * This can be used to break ties or calculate a weighted score.
+ */
+export const LABEL_WEIGHTS: Record<string, number> = {};
+let currentWeight = 1000;
+for (const group of taxonomyData.groups) {
+  for (const lbl of group.labels) {
+    LABEL_WEIGHTS[lbl.id] = currentWeight--;
+  }
+}
+
 export const TRAJECTORY_OPTIONS: AssessmentOption<TrajectoryType>[] =
   taxonomyData.trajectories.map((t) => ({
     value: t.value as TrajectoryType,

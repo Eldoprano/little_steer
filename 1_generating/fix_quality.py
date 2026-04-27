@@ -121,11 +121,19 @@ def _entry_quality_issues(entry: ConversationEntry) -> set[str]:
             issues.add("foreign_script")
             break
 
+    if hasattr(entry, "label_runs") and entry.label_runs:
+        for run in entry.label_runs:
+            # Check status on the LabelRun object (or dict if not yet validated)
+            status = getattr(run, "status", None) or (run.get("status") if isinstance(run, dict) else "")
+            if status == "error":
+                issues.add("human_broken")
+                break
+
     return issues
 
 
 def _is_approved(entry: ConversationEntry) -> bool:
-    blocking = {"think_artifact", "max_length", "repetition", "failed", "empty_response", "foreign_script"}
+    blocking = {"think_artifact", "max_length", "repetition", "failed", "empty_response", "foreign_script", "human_broken"}
     return not _entry_quality_issues(entry).intersection(blocking)
 
 
@@ -222,7 +230,7 @@ def fix_artifacts_file(path: Path, dry_run: bool) -> int:
 
 def remove_bad_file(path: Path, dry_run: bool) -> tuple[int, set[str]]:
     """Remove entries with blocking quality issues. Returns (removed_count, removed_ids)."""
-    BLOCKING = {"max_length", "repetition", "failed", "missing_reasoning", "foreign_script"}
+    BLOCKING = {"max_length", "repetition", "failed", "missing_reasoning", "foreign_script", "human_broken"}
     entries = _load_entries(path)
     bad_ids: set[str] = set()
     kept = []
@@ -242,7 +250,7 @@ def remove_bad_file(path: Path, dry_run: bool) -> tuple[int, set[str]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 ISSUE_KEYS = ["ok", "think_artifact", "max_length", "repetition",
-              "missing_reasoning", "empty_response", "failed", "foreign_script"]
+              "missing_reasoning", "empty_response", "failed", "foreign_script", "human_broken"]
 
 # Short column headers to keep the table narrow enough for long filenames.
 ISSUE_HEADERS = {
@@ -254,6 +262,7 @@ ISSUE_HEADERS = {
     "empty_response":    "empty",
     "failed":            "failed",
     "foreign_script":    "foreign",
+    "human_broken":      "broken",
 }
 
 ISSUE_STYLES = {
@@ -265,6 +274,7 @@ ISSUE_STYLES = {
     "empty_response":    "magenta",
     "failed":            "bold red",
     "foreign_script":    "yellow",
+    "human_broken":      "bold red",
 }
 
 
@@ -411,7 +421,7 @@ def main() -> None:
         for path in files:
             if args.model:
                 entries = _load_entries(path)
-                blocking = {"max_length", "repetition", "failed", "missing_reasoning", "foreign_script"}
+                blocking = {"max_length", "repetition", "failed", "missing_reasoning", "foreign_script", "human_broken"}
                 kept: list[ConversationEntry] = []
                 removed = 0
                 for entry in entries:
