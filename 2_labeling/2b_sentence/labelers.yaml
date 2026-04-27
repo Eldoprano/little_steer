@@ -68,7 +68,7 @@ labelers:
       backend: openai
       api_key_source: openai-api-key
       max_completion_tokens: 8192
-      logprobs: true
+      logprobs: false
       reasoning_effort: none
     pipeline:
       max_workers: 2

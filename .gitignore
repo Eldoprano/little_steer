@@ -93,6 +93,11 @@ human_labeling/dist/
 *_token_budget.json
 work_order.json
 
+# Claude Code / marimo tooling artifacts
+2_labeling/2b_sentence/iaa/.agents/
+2_labeling/2b_sentence/iaa/__marimo__/
+2_labeling/2b_sentence/iaa/skills-lock.json
+
 # Personal notes
 notes/
 
