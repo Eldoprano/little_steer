@@ -38,7 +38,7 @@ from sentence_labeler.taxonomy_loader import get_taxonomy_version, inject_taxono
 from thesis_schema import ConversationEntry
 
 DATASET_FILE = (HERE / "../../data/dataset.jsonl").resolve()
-WORK_ORDER_FILE = HERE / "work_order.json"
+WORK_ORDER_FILE = HERE / "work_order_iaa.json"
 BATCHES_DIR = HERE / "_artifacts" / "batches"
 BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -99,6 +99,23 @@ def load_labeled_ids_for_judge(judge_name: str) -> set[str]:
     return labeled
 
 
+def load_inflight_ids_for_judge(judge_name: str) -> set[str]:
+    """Return IDs currently in pending batches for this judge."""
+    inflight: set[str] = set()
+    if not BATCHES_DIR.exists():
+        return inflight
+    for path in BATCHES_DIR.glob("*.json"):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            status = data.get("status", "")
+            if data.get("judge_name") == judge_name and status not in ("completed", "failed", "expired", "canceled", "cancelled"):
+                inflight.update(data.get("entry_ids", []))
+        except Exception:
+            pass
+    return inflight
+
+
 def load_entries_by_id(ids: list[str]) -> dict[str, ConversationEntry]:
     entries: dict[str, ConversationEntry] = {}
     if not DATASET_FILE.exists():
@@ -120,16 +137,17 @@ def load_entries_by_id(ids: list[str]) -> dict[str, ConversationEntry]:
 
 
 def pick_entry_ids(judge_name: str, n_samples: int) -> list[str]:
-    """Return up to n_samples IDs from work_order.json not yet labeled by this judge."""
+    """Return up to n_samples IDs from work_order_iaa.json not yet labeled by this judge."""
     if not WORK_ORDER_FILE.exists():
         raise FileNotFoundError(
-            f"work_order.json not found. Run 'uv run run_all.py' once to generate it."
+            f"work_order_iaa.json not found."
         )
     with open(WORK_ORDER_FILE) as f:
         wo = json.load(f)
     all_ids = [item["id"] for item in wo.get("flat_order", [])]
     labeled = load_labeled_ids_for_judge(judge_name)
-    pending = [eid for eid in all_ids if eid not in labeled]
+    inflight = load_inflight_ids_for_judge(judge_name)
+    pending = [eid for eid in all_ids if eid not in labeled and eid not in inflight]
     return pending[:n_samples]
 
 
@@ -193,7 +211,7 @@ def estimate_cost(
     price_per_1m_input: float,
     price_per_1m_output: float,
     batch_discount: float,
-    output_ratio: float = 1.6,
+    output_ratio: float = 1.1,
 ) -> dict[str, Any]:
     valid = [p for p in prompts if p is not None]
     total_input_tokens = sum((len(p[0]) + len(p[1])) // 4 for p in valid)
@@ -438,6 +456,11 @@ def main() -> None:
         "--config", default="batch_labelers.yaml",
         help="Config file (default: batch_labelers.yaml)",
     )
+    parser.add_argument(
+        "--pass", dest="pass_number", type=int, default=1, metavar="N",
+        help="Labeling pass number. Pass >1 appends '_pass<N>' to judge names so "
+             "labels are stored separately, enabling multiple independent passes.",
+    )
     args = parser.parse_args()
 
     console = Console()
@@ -457,6 +480,9 @@ def main() -> None:
         batch_cfg = cfg.get("batch", {})
         out_cfg = cfg.get("output", {})
         name = judge["name"]
+        if args.pass_number > 1:
+            name = f"{name}_pass{args.pass_number}"
+            judge["name"] = name
         provider = judge.get("provider", "anthropic")
         taxonomy_version = out_cfg.get("taxonomy_version") or get_taxonomy_version()
 
@@ -464,7 +490,8 @@ def main() -> None:
         if args.test:
             n_samples = 1
 
-        console.rule(f"[cyan]{name}[/cyan]  ([dim]{provider}[/dim])")
+        pass_label = f"  [yellow]pass {args.pass_number}[/yellow]" if args.pass_number > 1 else ""
+        console.rule(f"[cyan]{name}[/cyan]  ([dim]{provider}[/dim]){pass_label}")
 
         # Load secrets
         secrets_path = Path(cfg.get("secrets_file", "../../.secrets.json"))

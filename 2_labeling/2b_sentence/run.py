@@ -79,6 +79,95 @@ def _crop_reasoning(text: str, max_chars: int) -> str:
     return window
 
 
+def _prepare_backfill_work_order(
+    labeler_cfg: LabelerConfig,
+    config_path: Path,
+    judge_name: str,
+) -> Path | None:
+    """Filter the active work order to entries missing logprobs for this judge.
+
+    Mutates labeler_cfg.pipeline.work_order_file and .overwrite_existing in-place.
+    Returns the path to the written temp work order file, or None when there is
+    nothing to backfill (judge not logprob-capable, or all entries already done).
+    """
+    judge_cfg = labeler_cfg.judges[0]
+    if not judge_cfg.logprobs:
+        console.print(f"[dim]  Backfill: {judge_name} has logprobs=false — skipping[/dim]")
+        return None
+
+    if not labeler_cfg.pipeline.work_order_file:
+        console.print(f"[yellow]  Backfill: no work_order_file configured for {judge_name}[/yellow]")
+        return None
+
+    wo_path = labeler_cfg.resolve_path(config_path, labeler_cfg.pipeline.work_order_file)
+    if not wo_path.exists():
+        console.print(f"[yellow]  Backfill: work order not found: {wo_path}[/yellow]")
+        return None
+
+    with open(wo_path) as f:
+        wo = json.load(f)
+
+    flat_order: list[dict] = wo.get("flat_order", [])
+    dataset_file: str = wo.get("dataset_file", "")
+
+    if not flat_order:
+        console.print(f"[yellow]  Backfill: work order has no flat_order entries[/yellow]")
+        return None
+
+    dataset_path = Path(dataset_file) if dataset_file else None
+    if not dataset_path or not dataset_path.exists():
+        console.print(f"[yellow]  Backfill: dataset file not found: {dataset_file}[/yellow]")
+        return None
+
+    # Scan dataset for entries that have this judge's run but are missing logprobs
+    target_ids = {item["id"] for item in flat_order}
+    needs_backfill: set[str] = set()
+    with open(dataset_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                eid = data.get("id")
+                if eid not in target_ids:
+                    continue
+                for run in data.get("label_runs", []):
+                    if run.get("judge_name") == judge_name:
+                        anns = run.get("sentence_annotations", [])
+                        if not any(ann.get("label_logprobs") for ann in anns):
+                            needs_backfill.add(eid)
+                        break
+            except Exception:
+                pass
+
+    console.print(
+        f"[dim]  Backfill: {judge_name}: "
+        f"[bold]{len(needs_backfill)}[/bold] / {len(target_ids)} entries need logprob backfill[/dim]"
+    )
+    if not needs_backfill:
+        return None
+
+    filtered_order = [item for item in flat_order if item["id"] in needs_backfill]
+
+    artifacts_dir = _HERE / "_artifacts"
+    artifacts_dir.mkdir(exist_ok=True)
+    tmp_path = artifacts_dir / f"_backfill_wo_{judge_name}.json"
+    tmp_path.write_text(json.dumps({
+        "generated_at": wo.get("generated_at", ""),
+        "strategy": "backfill_logprobs",
+        "total_entries": len(filtered_order),
+        "dataset_file": dataset_file,
+        "file_order": wo.get("file_order", ["dataset.jsonl"]),
+        "flat_order": filtered_order,
+        "per_file": {"dataset.jsonl": [item["id"] for item in filtered_order]},
+    }, indent=2))
+
+    labeler_cfg.pipeline.work_order_file = str(tmp_path)
+    labeler_cfg.pipeline.overwrite_existing = True
+    return tmp_path
+
+
 def _resolve_files(
     files: tuple[str, ...],
     glob_patterns: tuple[str, ...],
@@ -293,6 +382,11 @@ def run_multi_judge(
     help="Labeling pass number. Pass >1 appends '_pass<N>' to all judge names so "
          "labels are stored separately, enabling multiple independent passes over the same work order.",
 )
+@click.option(
+    "--backfill-logprobs",
+    is_flag=True, default=False,
+    help="Re-label only entries that already have a run for this judge but are missing logprobs.",
+)
 def main(
     files: tuple[str, ...],
     config: str | None,
@@ -308,6 +402,7 @@ def main(
     show_prompt: bool,
     work_order: str | None,
     pass_number: int,
+    backfill_logprobs: bool,
 ) -> None:
     """Label reasoning sentences in JSONL files using one or more LLM judges.
 
@@ -414,16 +509,27 @@ def main(
                 )
                 input()
 
-            run_pipeline(
-                input_files=input_files,
-                config=labeler_cfg,
-                config_path=config_path,
-                console=console,
-                reset_checkpoints=reset_checkpoints,
-                dry_run=dry_run,
-                judge_cfg=judge,
-            )
-            console.print()
+            tmp_wo_path: Path | None = None
+            try:
+                if backfill_logprobs and not dry_run:
+                    tmp_wo_path = _prepare_backfill_work_order(labeler_cfg, config_path, judge.name)
+                    if tmp_wo_path is None:
+                        console.print()
+                        continue
+
+                run_pipeline(
+                    input_files=input_files,
+                    config=labeler_cfg,
+                    config_path=config_path,
+                    console=console,
+                    reset_checkpoints=reset_checkpoints,
+                    dry_run=dry_run,
+                    judge_cfg=judge,
+                )
+                console.print()
+            finally:
+                if tmp_wo_path is not None and tmp_wo_path.exists():
+                    tmp_wo_path.unlink()
         return
 
     # ── Standard single/multi-judge config ───────────────────────────────────

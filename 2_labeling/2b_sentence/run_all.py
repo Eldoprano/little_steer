@@ -514,10 +514,12 @@ def main() -> None:
     _parser = _ap.ArgumentParser(add_help=False)
     _parser.add_argument("--work-order", default=None, dest="work_order")
     _parser.add_argument("--pass", default=1, type=int, dest="pass_number")
+    _parser.add_argument("--backfill-logprobs", action="store_true", default=False, dest="backfill_logprobs")
     _parser.add_argument("input", nargs="?", default=None)
     _args, _ = _parser.parse_known_args()
     work_order_override: str | None = _args.work_order
     pass_number: int = _args.pass_number
+    backfill_logprobs: bool = _args.backfill_logprobs
 
     # Load config metadata from the registry
     registry = LabelerRegistry.from_yaml(HERE / LABELERS_FILE)
@@ -599,6 +601,8 @@ def main() -> None:
         )
 
     console.print(f"[bold]Starting {len(metas)} judges on:[/bold] {input_path}")
+    if backfill_logprobs:
+        console.print("[bold yellow]Mode: --backfill-logprobs (re-label entries missing logprobs)[/bold yellow]")
     console.print(f"Logs: run_all_<judge>.log   |   Ctrl+C to stop\n")
 
     # Launch all judge subprocesses
@@ -613,6 +617,8 @@ def main() -> None:
             cmd += ["--work-order", work_order_override]
         if pass_number > 1:
             cmd += ["--pass", str(pass_number)]
+        if backfill_logprobs:
+            cmd += ["--backfill-logprobs"]
         cmd.append(str(input_path))
         proc = subprocess.Popen(
             cmd,
