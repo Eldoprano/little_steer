@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import fcntl
+
 import yaml
 from rich.console import Console
 from sentence_labeler.taxonomy_loader import get_taxonomy_version
@@ -505,9 +507,29 @@ def generate_work_order(dataset_file: Path, output_path: Path, seed: int) -> Non
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+_RUN_ALL_LOCK_FILE = ARTIFACTS_DIR / "run_all.lock"
+
+
 def main() -> None:
     is_tty = sys.stdout.isatty()
     console = Console() if is_tty else Console(force_terminal=True)
+
+    # Prevent duplicate run_all.py invocations from stacking up and exhausting RAM.
+    # A second invocation (not "status") will print a warning and exit immediately.
+    _lock_fh = None
+    if len(sys.argv) <= 1 or sys.argv[1] != "status":
+        _lock_fh = open(_RUN_ALL_LOCK_FILE, "w")
+        try:
+            fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            console.print(
+                "[bold red]run_all.py is already running![/bold red]\n"
+                "Another instance holds the lock at "
+                f"[cyan]{_RUN_ALL_LOCK_FILE}[/cyan].\n"
+                "Stop it first (Ctrl+C in the other terminal), then re-run."
+            )
+            _lock_fh.close()
+            sys.exit(1)
 
     # Parse CLI flags before the positional input argument
     import argparse as _ap
@@ -674,6 +696,12 @@ def main() -> None:
         for fh in log_handles:
             try:
                 fh.close()
+            except Exception:
+                pass
+        if _lock_fh is not None:
+            try:
+                fcntl.flock(_lock_fh, fcntl.LOCK_UN)
+                _lock_fh.close()
             except Exception:
                 pass
 

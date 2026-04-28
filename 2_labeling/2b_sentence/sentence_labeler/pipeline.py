@@ -10,7 +10,8 @@ import re
 import threading
 import time
 from collections import Counter, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import concurrent.futures
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -457,7 +458,8 @@ def process_file(
         scanned_ids, done_hashes = _scan_existing_ids(output_path)
         done_ids |= scanned_ids
 
-    # Load all entries into memory (needed for total count in progress bar)
+    # Load entries — when a work order is active, only load the needed IDs.
+    allowed_set = set(allowed_ids) if allowed_ids is not None else None
     entries: list[ConversationEntry] = []
     with open(input_path) as f:
         for line in f:
@@ -465,12 +467,17 @@ def process_file(
             if not line:
                 continue
             try:
-                entries.append(ConversationEntry.model_validate_json(line))
+                if allowed_set is not None:
+                    raw = json.loads(line)
+                    if raw.get("id") not in allowed_set:
+                        continue
+                    entries.append(ConversationEntry.model_validate(raw))
+                else:
+                    entries.append(ConversationEntry.model_validate_json(line))
             except Exception as e:
                 console.print(f"[yellow]  Skip malformed line in {input_path.name}: {e}[/yellow]")
 
-    # When a work order is active, restrict to the specified IDs and honour their order.
-    # This ensures all judges target the same entries regardless of per-judge skips.
+    # When a work order is active, reorder entries to honour the specified order.
     if allowed_ids is not None:
         id_to_entry = {e.id: e for e in entries}
         entries = [id_to_entry[eid] for eid in allowed_ids if eid in id_to_entry]
@@ -768,6 +775,18 @@ def process_breadth_first(
 ) -> tuple[int, int, int, int]:
     """Process entries from a breadth-first flat_order across multiple source files.
 
+    Streaming design: entries are never bulk-loaded into memory.  A two-pass
+    approach is used per file:
+
+      Pass 1 (raw JSON, no Pydantic): scan to build done_ids — checks
+        judge_name + taxonomy_version + generation_hash directly from the raw
+        dict, so no Pydantic objects are created for already-done entries.
+
+      Pass 2 (streaming): open the file and yield only todo entries as
+        Pydantic objects one at a time.  A bounded in-flight window
+        (max_workers × 4) ensures at most that many entries exist in RAM
+        simultaneously.
+
     When the source file is dataset.jsonl, results are written back in-place
     using an exclusive file lock so parallel judge subprocesses don't overwrite
     each other.  A try/finally guarantees the merge runs even on Ctrl+C.
@@ -780,18 +799,13 @@ def process_breadth_first(
 
     output_paths: dict[str, Path] = {}
     checkpoints: dict[str, CheckpointManager] = {}
-    done_ids_per_file: dict[str, set[str]] = {}
-    done_hashes_per_file: dict[str, dict[str, str]] = {}
     write_locks: dict[str, threading.Lock] = {}
     in_place_fnames: set[str] = set()
-    # Entries labeled in this run, collected for the atomic merge at the end
     in_place_new_entries: dict[str, dict[str, ConversationEntry]] = {}
 
     for fname in file_names:
         fpath = input_dir / fname
         if fname == "dataset.jsonl":
-            # In-place mode: write back to the dataset itself.
-            # Use a per-judge checkpoint so judges don't share state.
             out = fpath
             cp_path = fpath.parent / f"dataset{output_suffix}.checkpoint.json"
             in_place_fnames.add(fname)
@@ -805,78 +819,66 @@ def process_breadth_first(
         if reset_checkpoints:
             cp.delete()
         checkpoints[fname] = cp
-
-        if fname not in in_place_fnames:
-            scanned_ids, scanned_hashes = _scan_existing_ids(out)
-            done_ids_per_file[fname] = cp.load() | scanned_ids
-            done_hashes_per_file[fname] = scanned_hashes
-        else:
-            # Will be populated below after entries are loaded
-            done_ids_per_file[fname] = cp.load()
-            done_hashes_per_file[fname] = {}
-
         write_locks[fname] = threading.Lock()
 
-    # Load all source entries into memory
-    all_entries: dict[str, dict[str, ConversationEntry]] = {}
+    # ── Pass 1: build done_ids without loading full Pydantic objects ─────────
+    done_ids_per_file: dict[str, set[str]] = {}
     for fname in file_names:
-        fpath = input_dir / fname
-        entries: dict[str, ConversationEntry] = {}
-        if fpath.exists():
-            with open(fpath) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        e = ConversationEntry.model_validate_json(line)
-                        entries[e.id] = e
-                    except Exception as exc:
-                        console.print(f"[yellow]  Skip malformed line in {fname}: {exc}[/yellow]")
-        all_entries[fname] = entries
-
-        # For in-place files: mark entries already labeled by this judge as done
+        cp_done = checkpoints[fname].load()
         if fname in in_place_fnames:
-            for e in entries.values():
-                gen_hash = e.metadata.get("generation_hash") or _compute_generation_hash(e)
-                if _matching_label_run(
-                    e,
-                    judge_name=judge_cfg.name,
-                    taxonomy_version=taxonomy_version,
-                    generation_hash=gen_hash,
-                ) is not None:
-                    done_ids_per_file[fname].add(e.id)
+            # Scan raw JSON to find entries already labeled by this judge with
+            # a matching generation hash.  Stale entries (hash mismatch) are
+            # intentionally left out of done_ids so they get re-labeled.
+            done: set[str] = set(cp_done)
+            fpath = input_dir / fname
+            if fpath.exists():
+                with open(fpath) as _f:
+                    for _line in _f:
+                        _stripped = _line.strip()
+                        if not _stripped:
+                            continue
+                        try:
+                            _raw = json.loads(_stripped)
+                            _eid = _raw.get("id")
+                            if not _eid or _eid in done:
+                                continue
+                            _entry_gen_hash = (_raw.get("metadata") or {}).get("generation_hash", "")
+                            for _run in _raw.get("label_runs") or []:
+                                if (
+                                    _run.get("judge_name") == judge_cfg.name
+                                    and _run.get("taxonomy_version") == taxonomy_version
+                                ):
+                                    _run_gen_hash = _run.get("generation_hash", "")
+                                    # No metadata hash → can't verify staleness; treat as done.
+                                    if not _entry_gen_hash or _run_gen_hash == _entry_gen_hash:
+                                        done.add(_eid)
+                                    # Hash mismatch → stale; leave out so it gets re-labeled.
+                                    break
+                        except Exception:
+                            pass
+            done_ids_per_file[fname] = done
+        else:
+            scanned, _ = _scan_existing_ids(output_paths[fname])
+            done_ids_per_file[fname] = cp_done | scanned
 
-    todo = [
-        item for item in flat_order
-        if item["file"] in all_entries
-        and item["id"] in all_entries[item["file"]]
-        and (pipeline_cfg.overwrite_existing or item["id"] not in done_ids_per_file.get(item["file"], set()))
-    ]
-    progress.update(task_id, total=len(todo))
+    # ── Build todo sets ───────────────────────────────────────────────────────
+    todo_ids_per_file: dict[str, set[str]] = {}
+    total_todo = 0
+    for fname in file_names:
+        work_ids = {item["id"] for item in flat_order if item["file"] == fname}
+        todo_ids = work_ids if pipeline_cfg.overwrite_existing else work_ids - done_ids_per_file.get(fname, set())
+        todo_ids_per_file[fname] = todo_ids
+        total_todo += len(todo_ids)
 
+    progress.update(task_id, total=total_todo)
     labeled = skipped = failed = budget_stopped = 0
     since_checkpoint = 0
 
-    def _process_item(item: dict[str, str]) -> str:
-        fname = item["file"]
-        eid = item["id"]
-        entry = all_entries[fname].get(eid)
+    # ── Worker ────────────────────────────────────────────────────────────────
 
-        if entry is None:
-            return "skipped"
-        if not pipeline_cfg.overwrite_existing and eid in done_ids_per_file.get(fname, set()):
-            source_hash = entry.metadata.get("generation_hash") or _compute_generation_hash(entry)
-            stored_hash = done_hashes_per_file.get(fname, {}).get(eid)
-            if stored_hash and source_hash and source_hash != stored_hash:
-                console.print(
-                    f"[yellow]  Generation changed [{eid[:12]}] — re-labeling "
-                    f"(old={stored_hash[:8]} new={source_hash[:8]})[/yellow]"
-                )
-                done_ids_per_file.setdefault(fname, set()).discard(eid)
-                checkpoints[fname].mark_failed(eid, "stale: generation changed, re-labeling")
-            else:
-                return "skipped"
+    def _process_entry(entry: ConversationEntry, fname: str) -> str:
+        eid = entry.id
+
         if token_budget is not None and not token_budget.can_proceed():
             return "budget"
         if rate_limiter is not None and not rate_limiter.can_proceed():
@@ -885,16 +887,16 @@ def process_breadth_first(
             return "budget"
         if entry.metadata.get("approved") is False:
             return "skipped"
+
         generation_hash = entry.metadata.get("generation_hash") or entry.generation_hash()
         if (
-            _matching_label_run(
+            not pipeline_cfg.overwrite_existing
+            and _matching_label_run(
                 entry,
                 judge_name=judge_cfg.name,
                 taxonomy_version=taxonomy_version,
                 generation_hash=generation_hash,
-            )
-            is not None
-            and not pipeline_cfg.overwrite_existing
+            ) is not None
         ):
             return "skipped"
 
@@ -904,6 +906,7 @@ def process_breadth_first(
         reasoning_text = entry.messages[reasoning_idx]["content"]
         if not reasoning_text.strip():
             return "skipped"
+
         reasoning_truncated = False
         if pipeline_cfg.max_reasoning_chars is not None:
             cropped = _crop_reasoning(reasoning_text, pipeline_cfg.max_reasoning_chars)
@@ -918,11 +921,10 @@ def process_breadth_first(
 
         if token_budget is not None:
             estimated = (
-                len(system_prompt_text or "") +
-                len(format_prompt(
+                len(system_prompt_text or "")
+                + len(format_prompt(
                     prompt_template, user_prompt, reasoning_text, response_text,
-                    pipeline_cfg.response_sentences,
-                    reasoning_truncated=reasoning_truncated,
+                    pipeline_cfg.response_sentences, reasoning_truncated=reasoning_truncated,
                 ))
             ) // 4
             max_comp = judge_cfg.max_completion_tokens or judge_cfg.max_tokens or 8192
@@ -989,7 +991,6 @@ def process_breadth_first(
 
         with write_locks[fname]:
             if fname in in_place_fnames:
-                # Collect for atomic merge into dataset.jsonl at the end
                 in_place_new_entries[fname][eid] = updated_entry
             else:
                 with open(output_paths[fname], "a", encoding="utf-8") as f:
@@ -998,39 +999,103 @@ def process_breadth_first(
 
         return "labeled"
 
+    # ── Pass 2: bounded streaming ─────────────────────────────────────────────
+
+    def _limits_exhausted() -> bool:
+        return (
+            (token_budget is not None and not token_budget.can_proceed())
+            or (rate_limiter is not None and not rate_limiter.can_proceed())
+            or (entry_limit is not None and not entry_limit.can_proceed())
+        )
+
+    def _stream_entries():
+        """Yield (fname, entry) for every todo entry, reading one line at a time.
+
+        On Linux, atomic rename (used by _atomic_merge_label_runs) does not
+        affect an already-open file handle — we keep reading the original inode
+        while the merged file becomes the new dataset.jsonl.  This is safe
+        because _atomic_merge_label_runs re-reads the current file state when
+        writing, so our stale read here never causes data loss.
+        """
+        for fname in file_names:
+            fpath = input_dir / fname
+            if not fpath.exists():
+                continue
+            todo_ids = todo_ids_per_file.get(fname, set())
+            if not todo_ids:
+                continue
+            with open(fpath) as f:
+                for line in f:
+                    if _limits_exhausted():
+                        return
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        raw = json.loads(stripped)
+                        eid = raw.get("id")
+                        if eid not in todo_ids:
+                            continue
+                        yield fname, ConversationEntry.model_validate(raw)
+                    except Exception as exc:
+                        console.print(f"[yellow]  Skip malformed line in {fname}: {exc}[/yellow]")
+
+    MAX_INFLIGHT = pipeline_cfg.max_workers * 4
+
+    def _do_checkpoint() -> None:
+        for cp in checkpoints.values():
+            cp.save()
+        for fn in in_place_fnames:
+            with write_locks[fn]:
+                if in_place_new_entries[fn]:
+                    _atomic_merge_label_runs(output_paths[fn], in_place_new_entries[fn])
+                    in_place_new_entries[fn].clear()
+
     try:
         with ThreadPoolExecutor(max_workers=pipeline_cfg.max_workers) as pool:
-            futures = {pool.submit(_process_item, item): item for item in todo}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    item = futures[future]
-                    console.print(f"[red]  Unexpected error [{item['id'][:12]}]: {exc}[/red]")
-                    result = "failed"
+            pending: dict = {}  # future -> (fname, eid)
+            entry_stream = _stream_entries()
+            stream_exhausted = False
 
-                if result == "labeled":
-                    labeled += 1
-                    since_checkpoint += 1
-                    if since_checkpoint >= pipeline_cfg.checkpoint_every:
-                        for cp in checkpoints.values():
-                            cp.save()
-                        
-                        # Periodic merge so progress is visible in run_all.py dashboard
-                        for fname in in_place_fnames:
-                            with write_locks[fname]:
-                                if in_place_new_entries[fname]:
-                                    _atomic_merge_label_runs(output_paths[fname], in_place_new_entries[fname])
-                                    in_place_new_entries[fname].clear()
-                        since_checkpoint = 0
-                elif result == "skipped":
-                    skipped += 1
-                elif result == "budget":
-                    budget_stopped += 1
-                else:
-                    failed += 1
+            while True:
+                # Refill the in-flight window up to MAX_INFLIGHT.
+                while not stream_exhausted and len(pending) < MAX_INFLIGHT:
+                    try:
+                        fname, entry = next(entry_stream)
+                        fut = pool.submit(_process_entry, entry, fname)
+                        pending[fut] = (fname, entry.id)
+                    except StopIteration:
+                        stream_exhausted = True
 
-                progress.advance(task_id)
+                if not pending:
+                    break
+
+                # Block until at least one future finishes, then drain all completed ones.
+                done_futs, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for fut in done_futs:
+                    fname, eid = pending.pop(fut)
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        console.print(f"[red]  Unexpected error [{eid[:12]}]: {exc}[/red]")
+                        result = "failed"
+
+                    if result == "labeled":
+                        labeled += 1
+                        since_checkpoint += 1
+                        if since_checkpoint >= pipeline_cfg.checkpoint_every:
+                            _do_checkpoint()
+                            since_checkpoint = 0
+                    elif result == "skipped":
+                        skipped += 1
+                    elif result == "budget":
+                        budget_stopped += 1
+                        stream_exhausted = True  # stop submitting; drain existing futures
+                    else:
+                        failed += 1
+
+                    progress.advance(task_id)
+
     except KeyboardInterrupt:
         console.print("\n[yellow]  Interrupted — waiting for active workers to finish and saving…[/yellow]")
         # ThreadPoolExecutor __exit__ will wait for currently running futures.

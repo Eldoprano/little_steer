@@ -61,7 +61,7 @@ labelers:
     output:
       suffix: "_gpt-5.4-mini"
 
-  - enabled: true
+  - enabled: false
     judge:
       name: gpt-5.4-2026-03-05
       model_id: gpt-5.4-2026-03-05
