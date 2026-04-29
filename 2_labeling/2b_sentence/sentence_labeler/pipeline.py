@@ -837,6 +837,10 @@ def process_breadth_first(
                         _stripped = _line.strip()
                         if not _stripped:
                             continue
+                        # OPTIMIZATION: If the judge name isn't in the raw line, it definitely 
+                        # doesn't have a label run for this judge. Skip expensive JSON parsing.
+                        if judge_cfg.name not in _line:
+                            continue
                         try:
                             _raw = json.loads(_stripped)
                             _eid = _raw.get("id")

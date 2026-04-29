@@ -152,11 +152,22 @@ def call_llm(
     if cfg.extra_body:
         kwargs["extra_body"] = cfg.extra_body
 
-    if request_logprobs:
+    if request_logprobs and cfg.backend != "gemini":
         kwargs["logprobs"] = True
 
     response = client.chat.completions.create(**kwargs)
-    content = response.choices[0].message.content
+    message = response.choices[0].message
+    content = message.content
+
+    # Handle models (like those on NVIDIA NIM) that return the main response 
+    # in the reasoning_content or reasoning field.
+    if not content:
+        if hasattr(message, "reasoning_content") and message.reasoning_content:
+            content = message.reasoning_content
+        elif hasattr(message, "reasoning") and message.reasoning:
+            content = message.reasoning
+        elif isinstance(message, dict): # Handle dict-like access if needed
+            content = message.get("reasoning_content") or message.get("reasoning")
 
     metadata = {
         "model": response.model,

@@ -36,7 +36,7 @@ defaults:
     max_lookahead_min: 500
 
   output:
-    dir: "../../data"
+    dir: "../../data/2b_labeled"
     in_place: false
 
 
@@ -178,6 +178,24 @@ labelers:
     output:
       suffix: "_gemini-3.1-flash-lite-preview"
 
+  - enabled: false
+    judge:
+      name: gemma-4-31b-it
+      model_id: gemma-4-31b-it
+      backend: gemini
+      api_key_source: gemini-free-api-key
+      timeout: 600
+      rpm: 15
+      logprobs: false
+    pipeline:
+      max_retries: 2
+      max_workers: 1
+      retry_delay: 8.0
+      checkpoint_every: 1
+      request_state_file: "gemma-4-31b-it_requests.json"
+    output:
+      suffix: "_gemma-4-31b-it"
+
   # ── OpenRouter (free tier, ~167 req/day shared) ──────────────────────────────
   - enabled: true
     judge:
@@ -316,7 +334,7 @@ labelers:
   - enabled: false
     judge:
       name: nvidia-deepseek
-      model_id: deepseek-ai/deepseek-v3.2
+      model_id: deepseek-ai/deepseek-v3
       backend: nvidia
       api_key_source: nvidia-api-key
     pipeline:
@@ -324,23 +342,27 @@ labelers:
     output:
       suffix: "_nvidia-deepseek"
 
-  - enabled: false
+  - enabled: true
     judge:
-      name: nvidia-glm4.7
-      model_id: z-ai/glm4.7
+      name: nvidia-glm4.5-air
+      model_id: z-ai/glm-4.5-air
       backend: nvidia
       api_key_source: nvidia-api-key
+      timeout: 300
+      max_tokens: 4096
     pipeline:
-      request_state_file: "_artifacts/nvidia_glm47_request_state.json"
+      request_state_file: "_artifacts/nvidia_glm45air_request_state.json"
     output:
-      suffix: "_nvidia-glm4.7"
+      suffix: "_nvidia-glm4.5-air"
 
-  - enabled: false
+  - enabled: true
     judge:
       name: nvidia-kimi
       model_id: moonshotai/kimi-k2-thinking
       backend: nvidia
       api_key_source: nvidia-api-key
+      timeout: 300
+      max_tokens: 4096
     pipeline:
       request_state_file: "_artifacts/nvidia_kimi_request_state.json"
     output:
@@ -353,31 +375,35 @@ labelers:
       backend: nvidia
       api_key_source: nvidia-api-key
       timeout: 300
+      max_tokens: 4096
       rpm: 20
     pipeline:
       request_state_file: "_artifacts/nvidia_minimax_request_state.json"
     output:
       suffix: "_nvidia-minimax"
 
-  - enabled: false
+  - enabled: true
     judge:
       name: nvidia-stepfun
       model_id: stepfun-ai/step-3.5-flash
       backend: nvidia
       api_key_source: nvidia-api-key
       timeout: 300
+      max_tokens: 4096
       rpm: 20
     pipeline:
       request_state_file: "_artifacts/nvidia_stepfun_request_state.json"
     output:
       suffix: "_nvidia-stepfun"
 
-  - enabled: false  # same model as nvidia-stepfun, standard (no rate-limit) settings
+  - enabled: true  # same model as nvidia-stepfun, standard (no rate-limit) settings
     judge:
       name: nvidia-step
       model_id: stepfun-ai/step-3.5-flash
       backend: nvidia
       api_key_source: nvidia-api-key
+      timeout: 300
+      max_tokens: 4096
     pipeline:
       request_state_file: "_artifacts/nvidia_step_request_state.json"
     output:
