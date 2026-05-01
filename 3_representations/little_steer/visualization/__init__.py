@@ -23,6 +23,7 @@ from .layer_plots import (
     plot_confusion_matrix,
     plot_vector_similarity,
 )
+from .probe_view import render_probe_detection_html, legend_html
 
 __all__ = [
     "render_token_similarity_html",
@@ -32,4 +33,6 @@ __all__ = [
     "plot_layer_metrics",
     "plot_confusion_matrix",
     "plot_vector_similarity",
+    "render_probe_detection_html",
+    "legend_html",
 ]

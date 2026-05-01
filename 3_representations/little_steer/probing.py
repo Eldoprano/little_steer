@@ -43,6 +43,7 @@ from .data.tokenizer_utils import TokenPositionMapper, TokenSpan
 if TYPE_CHECKING:
     from .models.model import LittleSteerModel
     from .vectors.steering_vector import SteeringVector, SteeringVectorSet
+    from .mlp_probe import MLPProbe, LinearProbeMultilabel
     from thesis_schema import ConversationEntry
 
 
@@ -116,6 +117,36 @@ class TokenSimilarities:
     token_spans: List[TokenSpan]
     formatted_text: str
     label: str
+    layer: int
+
+
+@dataclass
+class ProbeDetectionResult:
+    """Per-token detection scores for a single entry.
+
+    Produced by :func:`get_probe_predictions` (from a trained probe) or
+    :func:`get_multilabel_token_scores` (from a SteeringVectorSet).
+
+    Pass directly to :func:`~little_steer.visualization.probe_view.render_probe_detection_html`.
+
+    Attributes:
+        tokens:           Decoded token strings, length = seq_len.
+        token_char_spans: (char_start, char_end) per token in ``formatted_text``.
+        scores:           (seq_len, n_labels) float32 array.
+                          Probe path: sigmoid probabilities in [0, 1].
+                          Vector path: cosine similarities in [-1, 1].
+        labels:           Label names matching columns of ``scores``.
+        formatted_text:   Full chat-formatted text.
+        token_spans:      Resolved annotation spans with token indices and labels.
+        layer:            Transformer layer used.
+    """
+
+    tokens: List[str]
+    token_char_spans: List[Tuple[int, int]]
+    scores: np.ndarray
+    labels: List[str]
+    formatted_text: str
+    token_spans: List[TokenSpan]
     layer: int
 
 
@@ -401,6 +432,7 @@ def evaluate_dataset(
     max_seq_len: int = 4096,
     normalize: bool = True,
     show_progress: bool = True,
+    progress_fn=None,
 ) -> List[EvaluationResult]:
     """Evaluate steering vectors with full classification metrics.
 
@@ -483,7 +515,12 @@ def evaluate_dataset(
     }
 
     token_mapper = TokenPositionMapper(model.tokenizer)
-    iterator = tqdm(dataset, desc="Evaluating dataset") if show_progress else dataset
+    if progress_fn is not None:
+        iterator = progress_fn(dataset)
+    elif show_progress:
+        iterator = tqdm(dataset, desc="Evaluating dataset")
+    else:
+        iterator = dataset
 
     for entry in iterator:
         if not entry.annotations:
@@ -884,6 +921,170 @@ def score_dataset(
 # ---------------------------------------------------------------------------
 # vector_similarity_matrix
 # ---------------------------------------------------------------------------
+
+
+def get_probe_predictions(
+    model: "LittleSteerModel",
+    entry: "ConversationEntry",
+    probe: "MLPProbe | LinearProbeMultilabel",
+    layer: int,
+) -> ProbeDetectionResult:
+    """Run a trained probe on every token position and return per-token scores.
+
+    Executes one forward pass through the model, then applies the probe to the
+    full activation sequence at ``layer``.  Returns sigmoid probabilities in
+    [0, 1] for each token × label combination.
+
+    This is the "detection" counterpart to K-Steering generation: the same
+    probe used to steer generation can also be used here to read which behaviors
+    are active at each position.
+
+    Args:
+        model:  LittleSteerModel instance.
+        entry:  Conversation entry (used for message formatting and span alignment).
+        probe:  Trained MLPProbe or LinearProbeMultilabel.
+        layer:  Transformer layer to extract activations from.
+
+    Returns:
+        :class:`ProbeDetectionResult` with ``scores`` in [0, 1].
+
+    Example:
+        result = ls.get_probe_predictions(model, entry, probe, layer=20)
+        html = ls.render_probe_detection_html(**result.__dict__, threshold=0.4)
+    """
+    formatted_text, message_offsets = model.format_messages_with_offsets(entry.messages)
+    token_spans = model._token_mapper.map_annotations_to_tokens(
+        entry, formatted_text, message_offsets
+    )
+
+    encoding = model.tokenize(formatted_text, return_offsets_mapping=True)
+    token_ids = encoding["input_ids"][0]
+    offset_mapping = encoding["offset_mapping"][0].tolist()
+
+    with torch.no_grad():
+        with model.trace(token_ids) as tracer:
+            acts_saved = (
+                model.layers_output[layer]
+                .squeeze(0)
+                .detach()
+                .cpu()
+                .save()
+            )
+            if layer < model.num_layers - 1:
+                tracer.stop()
+
+    acts: torch.Tensor = acts_saved   # (seq_len, hidden_dim)
+
+    probe_cpu = probe.to("cpu")
+    with torch.no_grad():
+        logits = probe_cpu(acts.float())          # (seq_len, n_labels)
+        probs = torch.sigmoid(logits).numpy()     # (seq_len, n_labels) float32
+
+    tokens = [model.tokenizer.decode([tid]) for tid in token_ids.tolist()]
+    token_char_spans = [(int(s), int(e)) for s, e in offset_mapping]
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return ProbeDetectionResult(
+        tokens=tokens,
+        token_char_spans=token_char_spans,
+        scores=probs.astype(np.float32),
+        labels=probe.labels,
+        formatted_text=formatted_text,
+        token_spans=token_spans,
+        layer=layer,
+    )
+
+
+def get_multilabel_token_scores(
+    model: "LittleSteerModel",
+    entry: "ConversationEntry",
+    vector_set: "SteeringVectorSet",
+    layer: int,
+) -> ProbeDetectionResult:
+    """Compute per-token cosine similarity for each vector in a set.
+
+    Executes one forward pass and computes cosine similarity between every token
+    activation and each label's steering vector at ``layer``.  Use with
+    ``normalize_scores=True`` in :func:`render_probe_detection_html` to map
+    similarities into [0, 1] before applying the threshold.
+
+    Args:
+        model:      LittleSteerModel instance.
+        entry:      Conversation entry.
+        vector_set: SteeringVectorSet — only vectors at ``layer`` are used.
+        layer:      Transformer layer to extract activations from.
+
+    Returns:
+        :class:`ProbeDetectionResult` with ``scores`` as cosine similarities in [-1, 1].
+
+    Raises:
+        ValueError: If no vectors in the set are at ``layer``.
+
+    Example:
+        vectors_at_layer = vector_set.filter(layer=20, method="pca")
+        result = ls.get_multilabel_token_scores(model, entry, vectors_at_layer, layer=20)
+        html = ls.render_probe_detection_html(
+            **result.__dict__, threshold=0.6, normalize_scores=True
+        )
+    """
+    vecs_at_layer = [v for v in vector_set if v.layer == layer]
+    if not vecs_at_layer:
+        raise ValueError(
+            f"No vectors found at layer {layer}. "
+            f"Available layers: {sorted(set(v.layer for v in vector_set))}"
+        )
+
+    formatted_text, message_offsets = model.format_messages_with_offsets(entry.messages)
+    token_spans = model._token_mapper.map_annotations_to_tokens(
+        entry, formatted_text, message_offsets
+    )
+
+    encoding = model.tokenize(formatted_text, return_offsets_mapping=True)
+    token_ids = encoding["input_ids"][0]
+    offset_mapping = encoding["offset_mapping"][0].tolist()
+
+    with torch.no_grad():
+        with model.trace(token_ids) as tracer:
+            acts_saved = (
+                model.layers_output[layer]
+                .squeeze(0)
+                .detach()
+                .cpu()
+                .save()
+            )
+            if layer < model.num_layers - 1:
+                tracer.stop()
+
+    acts: torch.Tensor = acts_saved               # (seq_len, hidden_dim)
+    acts_norm = F.normalize(acts.float(), dim=-1)  # (seq_len, hidden_dim)
+
+    seq_len = acts_norm.shape[0]
+    n_labels = len(vecs_at_layer)
+    scores = np.zeros((seq_len, n_labels), dtype=np.float32)
+    labels = [v.label for v in vecs_at_layer]
+
+    for j, vec in enumerate(vecs_at_layer):
+        sv_norm = F.normalize(vec.vector.float().unsqueeze(0), dim=-1).squeeze(0)
+        sims = (acts_norm * sv_norm).sum(dim=-1)   # (seq_len,)
+        scores[:, j] = sims.numpy()
+
+    tokens = [model.tokenizer.decode([tid]) for tid in token_ids.tolist()]
+    token_char_spans = [(int(s), int(e)) for s, e in offset_mapping]
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return ProbeDetectionResult(
+        tokens=tokens,
+        token_char_spans=token_char_spans,
+        scores=scores,
+        labels=labels,
+        formatted_text=formatted_text,
+        token_spans=token_spans,
+        layer=layer,
+    )
 
 
 def vector_similarity_matrix(

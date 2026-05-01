@@ -77,6 +77,7 @@ class ActivationExtractor:
         dataset: list[ConversationEntry],
         plan: ExtractionPlan,
         show_progress: bool = True,
+        progress_fn=None,
     ) -> ExtractionResult:
         """Extract activations for all conversations in the dataset.
 
@@ -126,7 +127,12 @@ class ActivationExtractor:
             s.token_selection.needs_logits for s in plan.specs.values()
         )
 
-        iterator = tqdm(dataset, desc=f"Extracting '{plan.name}'") if show_progress else dataset
+        if progress_fn is not None:
+            iterator = progress_fn(dataset)
+        elif show_progress:
+            iterator = tqdm(dataset, desc=f"Extracting '{plan.name}'")
+        else:
+            iterator = dataset
 
         for entry in iterator:
             metadata.n_conversations += 1
