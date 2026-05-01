@@ -77,15 +77,28 @@ from .probing import (
     BehaviorScore,
     TokenSimilarities,
     EvaluationResult,
+    ProbeDetectionResult,
     probe_text,
     score_dataset,
     get_token_similarities,
     evaluate_dataset,
     vector_similarity_matrix,
+    get_probe_predictions,
+    get_multilabel_token_scores,
 )
 from .steering import (
     steered_generate,
     multi_steered_generate,
+)
+from .mlp_probe import (
+    MLPProbe,
+    LinearProbeMultilabel,
+    MLPProbeTrainer,
+    load_probe,
+)
+from .k_steering import (
+    k_steered_generate,
+    projection_removal_generate,
 )
 
 try:
@@ -98,6 +111,8 @@ try:
         plot_layer_metrics,
         plot_confusion_matrix,
         plot_vector_similarity,
+        render_probe_detection_html,
+        legend_html,
     )
 except ImportError:
     pass
@@ -155,14 +170,25 @@ __all__ = [
     "BehaviorScore",
     "TokenSimilarities",
     "EvaluationResult",
+    "ProbeDetectionResult",
     "probe_text",
     "score_dataset",
     "get_token_similarities",
     "evaluate_dataset",
     "vector_similarity_matrix",
+    "get_probe_predictions",
+    "get_multilabel_token_scores",
     # Steering (writing)
     "steered_generate",
     "multi_steered_generate",
+    # MLP / linear multi-label probes (K-Steering paper)
+    "MLPProbe",
+    "LinearProbeMultilabel",
+    "MLPProbeTrainer",
+    "load_probe",
+    # Gradient-based steering (K-Steering paper)
+    "k_steered_generate",
+    "projection_removal_generate",
     # Visualization
     "render_token_similarity_html",
     "render_multilayer_html",
@@ -171,4 +197,6 @@ __all__ = [
     "plot_layer_metrics",
     "plot_confusion_matrix",
     "plot_vector_similarity",
+    "render_probe_detection_html",
+    "legend_html",
 ]
