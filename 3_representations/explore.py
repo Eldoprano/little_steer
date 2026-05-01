@@ -863,10 +863,10 @@ def _(mo):
     )
     cfg_mode = mo.ui.radio(
         options={
-            "token": "Token level",
-            "sentence": "Span level (avg probabilities per annotated span)",
+            "Token level": "token",
+            "Span level (avg probabilities per annotated span)": "sentence",
         },
-        value="token",
+        value="Span level (avg probabilities per annotated span)",
         label="Display mode",
     )
     cfg_show_gt = mo.ui.checkbox(label="Ground truth", value=True)
@@ -913,6 +913,10 @@ def _(
     mo.stop(entry_selector.value is None)
     if cfg_layer.value is None:
         mo.stop(True, mo.md("Run extraction first."))
+
+    import importlib
+    import little_steer.visualization.probe_view as _pv
+    importlib.reload(_pv)
 
     _probe = probe_state()
     _vectors = vectors_state()
@@ -973,18 +977,37 @@ def _(
         if _reasoning_keys:
             _start_tok = min(_reasoning_keys)
 
+    def _get_sentence_spans(tokens):
+        spans = []
+        start = 0
+        for i, tok in enumerate(tokens):
+            # Aggressive split: any newline or punctuation
+            if "\n" in tok or (tok.strip() and tok.strip()[-1] in (".", "!", "?")):
+                spans.append(ls.TokenSpan(token_start=start, token_end=i+1, labels=[]))
+                start = i + 1
+        if start < len(tokens):
+            spans.append(ls.TokenSpan(token_start=start, token_end=len(tokens), labels=[]))
+        return spans
+
     def _slice_det(det_obj, scores_arr):
         """Slice tokens/scores/spans to start from _start_tok."""
         _st = _start_tok
         _tokens = det_obj.tokens[_st:]
         _char_spans = det_obj.token_char_spans[_st:]
         _scores = scores_arr[_st:]
-        _spans = [
-            ls.TokenSpan(token_start=max(0, ts.token_start - _st),
-                         token_end=ts.token_end - _st, labels=ts.labels)
-            for ts in det_obj.token_spans
-            if ts.token_end > _st and ts.token_start - _st < len(_tokens)
-        ] if det_obj.token_spans else []
+
+        if cfg_mode.value == "sentence":
+            # Partition the visible text into sentences for averaging
+            _spans = _get_sentence_spans(_tokens)
+        else:
+            # Use original annotation spans (offset to match slice)
+            _spans = [
+                ls.TokenSpan(token_start=max(0, ts.token_start - _st),
+                             token_end=ts.token_end - _st, labels=ts.labels)
+                for ts in det_obj.token_spans
+                if ts.token_end > _st and ts.token_start - _st < len(_tokens)
+            ] if det_obj.token_spans else []
+
         _markers = {k - _st: v for k, v in _section_markers.items() if k >= _st}
         return _tokens, _char_spans, _scores, _spans, _markers, det_obj.formatted_text
 
@@ -1013,7 +1036,7 @@ def _(
                 if _lbl in _lbl_to_idx:
                     _gt_scores[_ts.token_start:min(_ts.token_end, len(_det.tokens)), _lbl_to_idx[_lbl]] = 1.0
         _toks, _cspans, _gts, _spans, _markers, _ftxt = _slice_det(_det, _gt_scores)
-        _html_gt = ls.render_probe_detection_html(
+        _html_gt = _pv.render_probe_detection_html(
             tokens=_toks, token_char_spans=_cspans,
             scores=_gts, labels=_u_labels,
             formatted_text=_ftxt, token_spans=_spans,
@@ -1028,7 +1051,7 @@ def _(
         if _legend_labels is None:
             _legend_labels = _u_labels_p
         _toks, _cspans, _sp, _spans, _markers, _ftxt = _slice_det(_det_probe, _scores_p)
-        _html_probe = ls.render_probe_detection_html(
+        _html_probe = _pv.render_probe_detection_html(
             tokens=_toks, token_char_spans=_cspans,
             scores=_sp, labels=_u_labels_p,
             formatted_text=_ftxt, token_spans=_spans,
@@ -1043,7 +1066,7 @@ def _(
         if _legend_labels is None:
             _legend_labels = _u_labels_v
         _toks, _cspans, _sv, _spans, _markers, _ftxt = _slice_det(_det_vectors, _scores_v)
-        _html_vec = ls.render_probe_detection_html(
+        _html_vec = _pv.render_probe_detection_html(
             tokens=_toks, token_char_spans=_cspans,
             scores=_sv, labels=_u_labels_v,
             formatted_text=_ftxt, token_spans=_spans,
@@ -1053,7 +1076,7 @@ def _(
         )
         _panels.append(mo.vstack([mo.md("#### Mean vector"), mo.Html(_html_vec)]))
 
-    _shared_legend = mo.Html(ls.legend_html(_legend_labels, cfg_threshold.value))
+    _shared_legend = mo.Html(_pv.legend_html(_legend_labels, cfg_threshold.value))
     _ellipsis = "\u2026"
     _dot = "\u00b7"
     _title = _user_msg[:120].replace(chr(10), " ")
