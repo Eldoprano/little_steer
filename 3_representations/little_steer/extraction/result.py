@@ -129,6 +129,17 @@ class ExtractionResult:
                     )
         return "\n".join(lines)
 
+    def merge_from(self, other: "ExtractionResult") -> None:
+        """Merge activations from another ExtractionResult into this one in-place."""
+        for spec, label_data in other._data.items():
+            for label, layer_data in label_data.items():
+                for layer, acts in layer_data.items():
+                    for act in acts:
+                        self.add(spec, label, layer, act)
+        self.metadata.n_conversations += other.metadata.n_conversations
+        self.metadata.n_annotations_processed += other.metadata.n_annotations_processed
+        self.metadata.n_annotations_skipped += other.metadata.n_annotations_skipped
+
     def __repr__(self) -> str:
         specs = self.specs()
         labels = self.labels()
