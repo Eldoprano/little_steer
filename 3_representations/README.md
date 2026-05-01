@@ -473,6 +473,128 @@ Each cell shows the count and its percentage of total. Title includes label, lay
 
 ---
 
+## MLP / Multi-Label Probes (K-Steering)
+
+Implements the joint probe from Oozeer et al. 2025 (arXiv:2505.24535).  Unlike the single-label linear probes used for steering vector evaluation, these probes classify **all behavior labels simultaneously** from a single activation vector.  Two variants are provided so you can compare linear vs non-linear approaches.
+
+### Probe types
+
+| Class | Architecture | Training |
+|---|---|---|
+| `MLPProbe` | Linear(d, 256) → ReLU → Linear(256, 256) → ReLU → Linear(256, n_labels) | Adam + BCE |
+| `LinearProbeMultilabel` | Single `nn.Linear(d, n_labels)` | sklearn LogisticRegression per label |
+
+Both return raw logits — apply `torch.sigmoid()` for probabilities.  Both support autograd, so they can be used directly for gradient-based steering.
+
+### Training
+
+```python
+trainer = ls.MLPProbeTrainer()
+
+# Train an MLP probe on all labels from a last-token extraction
+probe = trainer.train(
+    result,                         # ExtractionResult
+    spec="last_token",
+    layer=20,
+    labels=["stateSafetyConcern", "neutralFiller", "flagAsHarmful"],  # priority order
+    method="mlp",                   # or "linear" for comparison
+    epochs=30,
+    batch_size=32,
+    lr=1e-3,
+    device="cpu",
+    max_labels=None,                # None = all labels per annotation
+                                    # 1    = primary label only (first in labels list)
+                                    # 2    = top-2 labels per annotation
+)
+
+# Linear probe for comparison (same interface)
+linear_probe = trainer.train(result, spec="last_token", layer=20, method="linear")
+
+# Save / load
+probe.save("mlp_probe.pt")
+probe = ls.MLPProbe.load("mlp_probe.pt")
+linear_probe.save("linear_probe.pt")
+linear_probe = ls.LinearProbeMultilabel.load("linear_probe.pt")
+
+# Auto-detect type from file
+probe = ls.load_probe("some_probe.pt")
+```
+
+**`max_labels` parameter:** labels are iterated in the order you pass them to `train()`, so `max_labels=1` keeps only the primary (first) label per annotation — useful when you want to train on the most important label only and ignore secondary/tertiary ones.
+
+### Inference
+
+```python
+# Forward: raw logits
+logits = probe(activation)        # (n_labels,) or (seq_len, n_labels) or (batch, n_labels)
+
+# Predict: binary
+preds = probe.predict(activation, threshold=0.5)   # bool tensor, same shape
+
+# Probe info
+probe.labels        # ['stateSafetyConcern', 'neutralFiller', ...]
+probe.label_to_idx  # {'stateSafetyConcern': 0, 'neutralFiller': 1, ...}
+probe.num_labels    # int
+probe.input_dim     # int (hidden_size of the model it was trained on)
+```
+
+---
+
+## Gradient-Based Steering (K-Steering)
+
+Instead of applying a fixed precomputed vector, gradient-based steering computes the steering direction **fresh from the current activations at each generation step** using the trained probe.  The direction adapts to the evolving context rather than staying constant.
+
+Two algorithms from the paper:
+
+### Algorithm 1 — Iterative gradient steps (`k_steered_generate`)
+
+At each token: hook into the residual stream → run K gradient steps through the probe → patch updated activations → continue generation.
+
+```python
+output = ls.k_steered_generate(
+    model,
+    messages,
+    probe,                              # MLPProbe or LinearProbeMultilabel
+    layer=20,
+    increase_labels=["stateSafetyConcern"],   # push activations toward these labels
+    decrease_labels=["neutralFiller"],         # push activations away from these
+    alpha=1.0,                          # gradient step size
+    K=3,                                # number of steps per token
+    gamma=0.9,                          # per-step decay (step k uses alpha * gamma^k)
+    max_new_tokens=256,
+    do_sample=False,
+)
+```
+
+### Algorithm 2 — Householder reflection (`projection_removal_generate`)
+
+One-shot removal: reflects the activations through the hyperplane perpendicular to the probe gradient for the unwanted labels.  Cheaper than iterative (one forward+backward per token).  Suppression only.
+
+```python
+output = ls.projection_removal_generate(
+    model,
+    messages,
+    probe,
+    layer=20,
+    decrease_labels=["intendHarmfulCompliance"],
+    max_new_tokens=256,
+)
+```
+
+Both functions accept `do_sample`, `temperature`, `top_p`, and `add_generation_prompt`.
+
+### Comparison with static steering vectors
+
+| | Static (`steered_generate`) | Gradient-based (`k_steered_generate`) |
+|---|---|---|
+| Direction | Fixed, precomputed | Fresh per token from current activations |
+| Context sensitivity | None | Adapts to evolving context |
+| Multi-label | No (one vector at a time) | Yes (all labels in one probe) |
+| Speed | Fastest (no extra compute) | Slower (MLP forward+backward per token) |
+| Requires probe | No | Yes |
+
+---
+
 ## Steered Generation
 
 ```python
@@ -526,7 +648,7 @@ uv run pytest tests/test_schema.py tests/test_token_selection.py tests/test_vect
 uv run pytest tests/test_extraction_poc.py -v -s
 ```
 
-The integration test (`test_extraction_poc.py`) uses `Qwen/Qwen2.5-1.5B-Instruct`. **Known issue:** 5 tests in this file fail because Qwen2.5's default chat template strips the `reasoning` role content, so all annotations are skipped during extraction and the assertions fail. These tests pass when run against a model whose chat template preserves reasoning content (e.g. DeepSeek-R1). This is a model-compatibility issue, not a code bug.
+The integration test (`test_extraction_poc.py`) uses `Qwen/Qwen3.5-4B`, a thinking model whose chat template preserves `reasoning` role content so annotations in the thinking trace are correctly mapped to token positions.
 
 ---
 
@@ -569,8 +691,15 @@ The integration test (`test_extraction_poc.py`) uses `Qwen/Qwen2.5-1.5B-Instruct
 | `TokenSimilarities` | dataclass | tokens, layer→similarity map, annotation spans |
 | `evaluate_dataset(model, entries, vector_set)` | fn | AUROC/F1/confusion matrix per layer → `List[EvaluationResult]` |
 | `EvaluationResult` | dataclass | Full classification metrics + confusion matrix |
+| **Multi-Label Probes (K-Steering)** | | |
+| `MLPProbe` | class | 2-layer MLP multi-label classifier (256 hidden, ReLU, BCE loss) |
+| `LinearProbeMultilabel` | class | N independent logistic regressions as `nn.Linear` (autograd-compatible) |
+| `MLPProbeTrainer()` | class | Train either probe from an ExtractionResult |
+| `load_probe(path)` | fn | Load MLPProbe or LinearProbeMultilabel from file (auto-detects type) |
 | **Steering** | | |
-| `steered_generate(model, messages, vec, alpha)` | fn | Steered autoregressive generation |
+| `steered_generate(model, messages, vec, alpha)` | fn | Static vector steering — fixed precomputed direction |
+| `k_steered_generate(model, messages, probe, ...)` | fn | Gradient-based per-token steering (Algorithm 1, K-Steering paper) |
+| `projection_removal_generate(model, messages, probe, ...)` | fn | One-shot Householder reflection (Algorithm 2, K-Steering paper) |
 | **Visualization** | | |
 | `show_token_similarity(model, entry, vec, ...)` | fn | Jupyter HTML: coloured tokens + optional multi-layer grid |
 | `render_token_similarity_html(token_sims, ...)` | fn | HTML string: single-layer coloured token view |
