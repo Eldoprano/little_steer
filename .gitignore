@@ -97,6 +97,7 @@ work_order.json
 2_labeling/2b_sentence/iaa/.agents/
 2_labeling/2b_sentence/iaa/__marimo__/
 2_labeling/2b_sentence/iaa/skills-lock.json
+3_representations/__marimo__/
 
 # Personal notes
 notes/
