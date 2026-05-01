@@ -106,21 +106,40 @@ class TokenPositionMapper:
         if chat_template is not None:
             kwargs["chat_template"] = chat_template
 
+        found_orig_indices = set()
         for mapped_i, mapped_msg in enumerate(mapped):
-            partial = self.tokenizer.apply_chat_template(mapped[: mapped_i + 1], **kwargs)
+            try:
+                partial = self.tokenizer.apply_chat_template(mapped[: mapped_i + 1], **kwargs)
+            except Exception as e:
+                # Some templates (like Qwen3.5) raise "No user query found in messages"
+                # if the prefix only contains a system message. We catch this and skip
+                # formatting for this prefix; offsets for these early messages will
+                # be found in later iterations where the user message is present.
+                if "user query" in str(e).lower():
+                    continue
+                raise e
 
-            for orig_i, search_content in search_map.get(mapped_i, []):
-                idx = partial.rfind(search_content)
-                if idx == -1:
-                    if messages[orig_i]["role"] == "reasoning":
-                        warnings.warn(
-                            f"Reasoning content for message {orig_i} was not found in the "
-                            f"formatted text. The chat template may have stripped it "
-                            f"(e.g. DeepSeek-R1 strips <think> blocks from all turns). "
-                            f"Annotations targeting this message will be skipped."
-                        )
-                else:
-                    offsets[orig_i] = idx
+            # Search for any message that belongs to this or previous mapped turns
+            # and hasn't been found yet.
+            for m_idx in range(mapped_i + 1):
+                for orig_i, search_content in search_map.get(m_idx, []):
+                    if orig_i in found_orig_indices:
+                        continue
+
+                    idx = partial.rfind(search_content)
+                    if idx != -1:
+                        offsets[orig_i] = idx
+                        found_orig_indices.add(orig_i)
+                    elif m_idx == mapped_i:
+                        # Only warn if it's the "current" message and we expected it now
+                        if messages[orig_i]["role"] == "reasoning":
+                            warnings.warn(
+                                f"Reasoning content for message {orig_i} was not found in the "
+                                f"formatted text. The chat template may have stripped it "
+                                f"(e.g. DeepSeek-R1 strips <think> blocks from all turns). "
+                                f"Annotations targeting this message will be skipped."
+                            )
+
 
         return offsets
 

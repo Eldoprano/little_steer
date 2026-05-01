@@ -16,6 +16,7 @@ from typing import Any
 
 import torch
 from nnterp import StandardizedTransformer
+from nnterp.rename_utils import RenameConfig
 
 from ..data.tokenizer_utils import TokenPositionMapper, _map_reasoning_role
 
@@ -42,6 +43,8 @@ class LittleSteerModel:
         device_map: str = "auto",
         torch_dtype: Any = "auto",
         use_pretrained_loading: bool = False,
+        attn_rename: str | list[str] | None = None,
+        mlp_rename: str | list[str] | None = None,
         **hf_kwargs: Any,
     ):
         """
@@ -56,6 +59,8 @@ class LittleSteerModel:
                 models whose config is incompatible with nnsight's meta-init
                 (e.g. multimodal architectures like Qwen3.5 where vocab_size
                 lives in a nested text_config).
+            attn_rename: Name(s) of the attention module (e.g. 'linear_attn' for Qwen3.5).
+            mlp_rename: Name(s) of the MLP module.
             **hf_kwargs: Extra kwargs forwarded to StandardizedTransformer.
         """
         self.model_id = model_id
@@ -69,11 +74,17 @@ class LittleSteerModel:
             # unlike from_config it does not set this automatically.
             hf_kwargs.setdefault("trust_remote_code", True)
 
+        # Setup custom renaming if provided
+        rename_config = None
+        if attn_rename or mlp_rename:
+            rename_config = RenameConfig(attn_name=attn_rename, mlp_name=mlp_rename)
+
         print(f"🔄 Loading {model_id} via nnterp...")
         self.st = StandardizedTransformer(
             model_id,
             device_map=device_map,
             torch_dtype=torch_dtype,
+            rename_config=rename_config,
             **hf_kwargs,
         )
         self._token_mapper = TokenPositionMapper(self.st.tokenizer)

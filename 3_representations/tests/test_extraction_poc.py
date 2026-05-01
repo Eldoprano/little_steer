@@ -2,7 +2,7 @@
 little_steer — Proof of Concept Integration Test
 =================================================
 
-Tests the full pipeline with Qwen/Qwen3.5-2B:
+Tests the full pipeline with Qwen/Qwen3.5-4B:
   1. Build a minimal dataset of ConversationEntry objects
   2. Load the model via LittleSteerModel (uses nnterp)
   3. Define an ExtractionPlan with MANY different specs (all TokenSelection strategies)
@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(
     reason="nnterp not installed — skipping integration tests"
 )
 
-MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_ID = "Qwen/Qwen3.5-4B"
 
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
