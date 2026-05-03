@@ -12,6 +12,17 @@ How it works:
   Positive alpha pushes the model towards the vector direction; negative
   alpha pushes it away.
 
+response_only=True:
+  By default the steering hook fires on every forward pass — including the
+  prefill of the prompt, where the model is "reading" the user's question.
+  When ``response_only=True`` the hook only modifies activations at the
+  newly-generated token positions (i.e. the assistant's own response). The
+  prompt is left untouched. This is closer in spirit to the K-Steering
+  paper's setup, and it makes alpha-vs-effect curves easier to interpret —
+  you're measuring "how much does steering the response itself change the
+  model's output", not "how much does steering the model's READING of the
+  prompt change things".
+
 Performance note:
   nnsight tracing adds per-token overhead compared to native HF generation.
   To keep generation fast, prefer do_sample=False (greedy) and keep
@@ -42,6 +53,7 @@ def steered_generate(
     temperature: float = 0.6,
     top_p: float = 0.9,
     add_generation_prompt: bool = True,
+    response_only: bool = False,
 ) -> str:
     """Generate text with optional activation steering.
 
@@ -71,6 +83,11 @@ def steered_generate(
         add_generation_prompt:
                          Append the model's generation prompt after messages
                          (usually True for the standard single-turn use case).
+        response_only:   If True, only inject the steering vector at the
+                         newly-generated assistant tokens; leave the prompt
+                         prefill untouched. Default False keeps the historical
+                         behaviour (steer everywhere). Implemented via a manual
+                         forward hook that gates on ``output_seq_len > prompt_len``.
 
     Returns:
         The generated text as a plain string (only the newly generated tokens,
@@ -147,15 +164,69 @@ def steered_generate(
 
     st = model.st  # nnterp StandardizedTransformer (nnsight LanguageModel)
 
-    with st.generate(input_ids, **gen_kwargs) as _gen:
-        if raw_vec is not None and steer_layer is not None:
-            # steer() handles device placement and accepts int or list[int]
-            st.steer(steer_layer, raw_vec, factor=alpha)
-        output_ids = st.generator.output.save()
+    if response_only and raw_vec is not None and steer_layer is not None:
+        # Manual PyTorch forward hook gating on sequence-position dimension.
+        # With HF generate's KV cache (default), the prompt is processed in one
+        # forward pass with hidden.shape[1] == prompt_len, then each generated
+        # token comes through with hidden.shape[1] == 1. So we steer iff
+        # shape[1] == 1 — i.e. only on the model's own response tokens.
+        layers_list = (
+            [steer_layer] if isinstance(steer_layer, int) else list(steer_layer)
+        )
+        handles: list = []
+        try:
+            for li in layers_list:
+                handles.append(
+                    model.layers[li].register_forward_hook(
+                        _response_only_hook_factory(raw_vec, alpha)
+                    )
+                )
+            with st.generate(input_ids, **gen_kwargs) as _gen:
+                output_ids = st.generator.output.save()
+        finally:
+            for h in handles:
+                h.remove()
+    else:
+        with st.generate(input_ids, **gen_kwargs) as _gen:
+            if raw_vec is not None and steer_layer is not None:
+                # steer() handles device placement and accepts int or list[int]
+                st.steer(steer_layer, raw_vec, factor=alpha)
+            output_ids = st.generator.output.save()
 
     # Decode only the newly generated tokens
     new_tokens = output_ids[0][input_ids.shape[1]:]
     return model.tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
+def _response_only_hook_factory(vector: torch.Tensor, alpha: float):
+    """Build a PyTorch forward hook that only fires on generation steps.
+
+    Layer outputs during prefill have shape (batch, prompt_len, hidden);
+    during generation they have shape (batch, 1, hidden). The single-token
+    shape is the discriminator: when we see it we add ``alpha * vector`` to
+    the residual stream; otherwise we pass through unchanged.
+    """
+    cached_vec = vector.detach().clone()
+
+    def hook(_module, _inputs, output):
+        if isinstance(output, tuple):
+            hidden = output[0]
+            rest = output[1:]
+        else:
+            hidden = output
+            rest = None
+
+        # Only intervene during single-token decode steps.
+        if hidden.shape[1] != 1:
+            return output
+
+        v = cached_vec.to(hidden.device).to(hidden.dtype)
+        new_hidden = hidden + alpha * v
+        if rest is not None:
+            return (new_hidden,) + rest
+        return new_hidden
+
+    return hook
 
 
 def multi_steered_generate(

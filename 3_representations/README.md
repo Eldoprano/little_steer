@@ -4,6 +4,8 @@ A Python library for extracting activations from transformer models, building st
 
 Built on top of [nnterp](https://github.com/nnsight/nnterp) and [nnsight](https://nnsight.net/). Model-agnostic: works with any HuggingFace causal LM.
 
+> **What's new in 0.2.0** — see the *Session-cached detection*, *Hard-to-game scoring*, *Persona / Assistant-Axis*, *Vector transforms*, and *Response-only steering* sections below. The marimo demo at `3_representations/showcase.py` walks through everything.
+
 ---
 
 ## Installation
@@ -287,6 +289,37 @@ print(vectors.summary())
 vectors.save("vectors.pt")
 vectors = ls.SteeringVectorSet.load("vectors.pt")
 ```
+
+---
+
+## Session — cached detection
+
+`Session` owns a model + dataset and caches forward passes across calls. Use it whenever you'll be calling more than one read-side method on the same data — every detection function below is implemented as a thin wrapper around it.
+
+```python
+session = ls.Session(model, entries, cache_size=64)
+
+# Discrimination per (label, layer, method)
+scores = session.score(vectors)
+
+# Full classification metrics — multiple aggregations share ONE forward pass per entry
+results = session.evaluate(vectors, aggregations=["mean", "first", "last"])
+
+# Per-token, per-layer cosine similarities (for visualisation)
+ts = session.token_similarities(entries[0], vectors[0], layers=[10, 20, 30])
+
+# Probe-based detection (sigmoid probabilities per (token, label))
+detection = session.detect_with_probe(entries[0], probe, layer=20)
+
+# Or vector-based detection (cosine sim per (token, label))
+detection = session.detect_with_vectors(entries[0], vectors.filter(layer=20), layer=20)
+
+session.clear_cache()  # free CPU memory if needed
+```
+
+The big speedup: the old `evaluate_dataset(..., aggregation="mean")` had to be called three times to compare aggregations. With Session, pass `aggregations=["mean", "first", "last"]` and it's ~3× cheaper.
+
+The legacy `score_dataset` / `evaluate_dataset` / `probe_text` / `get_token_similarities` / `get_probe_predictions` / `get_multilabel_token_scores` functions still exist and produce identical output — they construct a Session under the hood.
 
 ---
 
@@ -617,6 +650,132 @@ output = ls.steered_generate(model, messages, steering_vector=vec,
 # Steer with a raw tensor (must specify layer)
 output = ls.steered_generate(model, messages,
                               steering_vector=some_tensor, layer=20, alpha=5.0)
+
+# Response-only steering: inject only on assistant tokens, leave the prompt alone.
+# Cleaner for measuring "what does steering the model's response do?" because
+# the model's READING of the prompt is unmodified.
+output = ls.steered_generate(model, messages, steering_vector=vec,
+                              alpha=15.0, response_only=True)
+```
+
+---
+
+## Hard-to-game scoring
+
+Discrimination and AUROC can be inflated by token-matching: if the spans for "I_INTEND_REFUSAL" all contain the word "refuse", a vector that's basically a "refuse-token detector" will score well without encoding any deeper concept. The `little_steer.scoring` module ships five complementary scores:
+
+| Function | Measures | Cost |
+|---|---|---|
+| `causal_steering_score` | Does the vector *cause* the behaviour to appear when injected? | High (needs a judge LLM + many generations) |
+| `token_ablation_score` | Discrimination retained after masking behaviour-keyword tokens | Low |
+| `neutral_pca_score` | Discrimination retained after projecting out neutral-text PCs (Anthropic emotion-vector recipe) | Medium |
+| `logit_lens_top_tokens` | Top tokens the vector upweights via the unembedding (diagnostic) | ~Free |
+| `embedding_keyword_overlap` | Cosine of vector to mean keyword token embedding (diagnostic) | ~Free |
+
+The headline metric is `causal_steering_score` — generate at increasing alphas, ask a judge whether the target behaviour appeared, and regress. A vector that doesn't actually cause the behaviour produces a flat curve, which can't be gamed by token co-occurrence in the training set.
+
+```python
+# Logit lens — quick sanity check that the vector talks about the right thing.
+readout = ls.logit_lens_top_tokens(model, vec, k=20)
+for tok, logit in readout.top_positive:
+    print(f"  +{logit:7.2f}  {tok!r}")
+
+# Embedding keyword overlap — diagnostic for surface-level vectors.
+overlap = ls.embedding_keyword_overlap(model, vec,
+                                       keywords=["concern", "unsafe", "harmful"])
+print(f"cosine to mean keyword embedding: {overlap.cosine:+.3f}")
+# > 0.5 is a red flag; 0.1–0.3 is typical for a deep-behavioural vector.
+
+# Token-confound ablation — re-score after masking behaviour keywords.
+ablation = ls.token_ablation_score(
+    model, eval_entries, vec,
+    keywords=["concern", "unsafe", "harmful"],
+)
+print(f"retained {ablation.retained_fraction:.0%} of discrimination")
+
+# Neutral-PCA confound removal — Anthropic emotion-vector recipe.
+pca_score = ls.neutral_pca_score(
+    model, vec,
+    neutral_entries=benign_prompts,
+    eval_entries=eval_entries,
+    n_components=8,
+)
+
+# Causal steering score — the headline metric. Requires a judge.
+def my_judge(prompt: str, response: str, label: str) -> float:
+    # Wrap your favourite LLM judge here. Returns a probability in [0, 1].
+    ...
+
+causal = ls.causal_steering_score(
+    model, vec,
+    neutral_prompts=[...],            # mostly-benign prompts
+    judge=my_judge,
+    alphas=(0, 5, 10, 15, 20),
+    n_per_alpha=10,
+)
+print(f"slope = {causal.slope:+.3f} per unit alpha")
+```
+
+`ScoringReport` collects everything into a Rich table:
+
+```python
+report = ls.ScoringReport(
+    logit_lens=[ls.logit_lens_top_tokens(model, v) for v in vectors],
+    embedding_overlap=[ls.embedding_keyword_overlap(model, v, keywords) for v in vectors],
+    ablation=[...],
+    neutral_pca=[...],
+    causal=[...],
+)
+report.render()
+```
+
+---
+
+## Persona / Assistant-Axis (Lu et al. 2026)
+
+`little_steer.persona` ships the linear-algebra primitives for the Assistant-Axis recipe. The paper's full data-collection pipeline (275 roles × 5 system prompts × 240 questions, in-role filtering) is out of scope — bring your own role/prompt collection.
+
+```python
+# Build a vector per (role, layer) plus the first PCA component across roles.
+axis = ls.extract_assistant_axis(
+    model,
+    role_prompts={
+        "teacher": ["You are a kindergarten teacher. Explain photosynthesis.", ...],
+        "lawyer":  ["You are a corporate lawyer. Draft a non-disclosure clause.", ...],
+        "robot":   ["You are a sci-fi robot from 2123. Describe your routine.", ...],
+    },
+    neutral_prompts=["What is 2+2?", "List three rivers in Europe.", ...],
+    layers=list(range(int(model.num_layers * 0.4),
+                       int(model.num_layers * 0.7))),
+)
+assistant_axis = axis.filter(label="ASSISTANT_AXIS").vectors[0]
+
+# Track persona drift across a multi-turn conversation.
+drifts = ls.persona_drift(model, multi_turn_conversation, assistant_axis)
+# One float per assistant turn — decreasing values = drift away from Assistant.
+
+# Calibrate alpha by measuring typical residual-stream norm.
+norm_at_layer = ls.residual_norm(model, calibration_dataset, layer=20,
+                                  sample_size=200)
+scaled = ls.normalize_to_residual_scale(vec.vector, target_norm=norm_at_layer)
+# Now alpha=1.0 means "one residual-stream unit", comparable across layers.
+```
+
+---
+
+## Vector transforms
+
+`little_steer.vectors.transforms` exposes three primitives that come up in nearly every confound-removal / multi-attribute-steering experiment:
+
+```python
+# Project a basis OUT of a vector (Gram–Schmidt internally; basis need not be orthonormal).
+cleaned = ls.project_out(vec.vector, neutral_pca_basis)
+
+# Rescale a vector to a target L2 norm.
+scaled = ls.normalize_to_residual_scale(vec.vector, target_norm=42.0)
+
+# Weighted sum of vectors at the same layer (multi-attribute intervention).
+combined = ls.compose([safety_vec, sycophancy_vec], weights=[1.0, -0.5])
 ```
 
 ---
@@ -635,14 +794,28 @@ vectors = ls.SteeringVectorSet.load("vectors.pt")
 
 ---
 
+## Marimo showcase
+
+`3_representations/showcase.py` is a marimo notebook that walks through the new API end-to-end: cached `Session` detection, hard-to-game scoring, response-only steering, and an Assistant-Axis preview. Open with:
+
+```bash
+cd 3_representations
+uv run marimo edit showcase.py
+```
+
+---
+
 ## Running Tests
 
 ```bash
 cd 3_representations
 uv sync --extra ml --extra dev
 
-# No-GPU tests (schema, token selection, vector math, visualization) — all pass
-uv run pytest tests/test_schema.py tests/test_token_selection.py tests/test_vectors.py tests/test_visualization.py -v
+# No-GPU tests (schema, token selection, vector math, visualization,
+# transforms, span-eval helpers) — all pass
+uv run pytest tests/test_schema.py tests/test_token_selection.py \
+              tests/test_vectors.py tests/test_visualization.py \
+              tests/test_transforms.py tests/test_span_eval.py -v
 
 # Full integration tests (requires GPU + model download)
 uv run pytest tests/test_extraction_poc.py -v -s
@@ -683,6 +856,18 @@ The integration test (`test_extraction_poc.py`) uses `Qwen/Qwen3.5-4B`, a thinki
 | `MeanCentering` | class | Method: target mean − centroid of all other categories |
 | `PCADirection` | class | Method: top PCA component(s) of target activations |
 | `LinearProbe` | class | Method: logistic regression weight vector |
+| `project_out(vec, basis)` | fn | Remove a basis (e.g. neutral PCs) from a vector |
+| `normalize_to_residual_scale(vec, target)` | fn | Rescale to a target L2 norm |
+| `compose([vec, ...], [w, ...])` | fn | Weighted sum of vectors |
+| **Session** | | |
+| `Session(model, entries)` | class | Cache-aware container; backbone of all detection |
+| `session.score(vectors)` | method | BehaviorScore per (label, layer, method) |
+| `session.evaluate(vectors, aggregations=[...])` | method | Full classification metrics; aggregations share one forward pass |
+| `session.token_similarities(entry, vector)` | method | Per-token similarities at one or more layers |
+| `session.detect_with_probe(entry, probe, layer)` | method | Sigmoid probabilities per (token, label) |
+| `session.detect_with_vectors(entry, vectors, layer)` | method | Cosine sim per (token, label) |
+| `session.probe_text(text, vectors)` | method | Cosine sim of raw-text activation against vectors |
+| `session.clear_cache()` | method | Drop cached forward passes (free memory) |
 | **Probing** | | |
 | `probe_text(model, text, vector_set)` | fn | Forward pass on text → `{(label, method, layer): cosine_sim}` |
 | `score_dataset(model, entries, vector_set)` | fn | Discrimination per layer → `List[BehaviorScore]` |
@@ -697,9 +882,21 @@ The integration test (`test_extraction_poc.py`) uses `Qwen/Qwen3.5-4B`, a thinki
 | `MLPProbeTrainer()` | class | Train either probe from an ExtractionResult |
 | `load_probe(path)` | fn | Load MLPProbe or LinearProbeMultilabel from file (auto-detects type) |
 | **Steering** | | |
-| `steered_generate(model, messages, vec, alpha)` | fn | Static vector steering — fixed precomputed direction |
+| `steered_generate(model, messages, vec, alpha, response_only=False)` | fn | Static vector steering — fixed precomputed direction; `response_only=True` only fires on assistant tokens |
+| `multi_steered_generate(model, messages, [(vec, layer, alpha), ...])` | fn | Compose multiple vectors at once |
 | `k_steered_generate(model, messages, probe, ...)` | fn | Gradient-based per-token steering (Algorithm 1, K-Steering paper) |
 | `projection_removal_generate(model, messages, probe, ...)` | fn | One-shot Householder reflection (Algorithm 2, K-Steering paper) |
+| **Hard-to-game scoring** | | |
+| `causal_steering_score(model, vec, neutral_prompts, judge, alphas)` | fn | Generate with each alpha, judge whether behaviour appeared, regress slope |
+| `token_ablation_score(model, entries, vec, keywords)` | fn | Mask keyword tokens; score retained discrimination |
+| `neutral_pca_score(model, vec, neutral_entries, eval_entries)` | fn | Project out neutral-text PCs; score retained discrimination |
+| `logit_lens_top_tokens(model, vec, k=20)` | fn | Top tokens the vector upweights via the unembedding |
+| `embedding_keyword_overlap(model, vec, keywords)` | fn | Cosine of vector to mean keyword token embedding |
+| `ScoringReport` | dataclass | Container with a `.render()` method (Rich table) |
+| **Persona / Assistant-Axis (Lu et al. 2026)** | | |
+| `extract_assistant_axis(model, role_prompts, neutral_prompts, layers)` | fn | Per-role mean-centred vectors + first PCA component (the axis) |
+| `persona_drift(model, conversation, axis_vector)` | fn | Project each assistant turn onto the axis to track drift |
+| `residual_norm(model, dataset, layer)` | fn | Mean L2 norm of the residual stream — calibration for alpha |
 | **Visualization** | | |
 | `show_token_similarity(model, entry, vec, ...)` | fn | Jupyter HTML: coloured tokens + optional multi-layer grid |
 | `render_token_similarity_html(token_sims, ...)` | fn | HTML string: single-layer coloured token view |
