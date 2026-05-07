@@ -535,7 +535,8 @@ def _(cfg_labels, compare_btn, extraction_result, ls, mo, np, torch):
             _probe = ls.MLPProbe(_X.shape[1], len(_labels_present), hidden_dim=128, labels=_labels_present)
             _trainer._train_mlp(
                 _probe, _X[_tr], _Y[_tr],
-                epochs=30, batch_size=32, lr=1e-3, device="cpu",
+                epochs=30, batch_size=32, lr=1e-3,
+                device="cuda" if torch.cuda.is_available() else "cpu",
                 show_progress=False,
             )
             with torch.no_grad():
@@ -679,6 +680,7 @@ def _(
             itr, title="Training MLP probe…", completion_title="Training done!"
         ),
         return_history=True,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
     set_probe_state(_probe)
 

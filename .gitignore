@@ -121,3 +121,7 @@ data/dataset.lock
 *.bkp
 2_labeling/2c_human_labeling/vite.config.ts
 .gitignore
+
+.agents/
+.codex
+skills-lock.json
