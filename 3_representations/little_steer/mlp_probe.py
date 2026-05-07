@@ -240,6 +240,63 @@ class MLPProbeTrainer:
                                       max_labels=1)
     """
 
+    def train_from_tensors(
+        self,
+        X: torch.Tensor,
+        Y: torch.Tensor,
+        labels: list[str],
+        method: Literal["mlp", "linear"] = "mlp",
+        *,
+        epochs: int = 30,
+        batch_size: int | None = None,
+        lr: float = 1e-3,
+        device: str | torch.device = "cpu",
+        hidden_dim: int = 256,
+        show_progress: bool = True,
+        progress_fn=None,
+        return_history: bool = False,
+        return_on_device: bool = False,
+    ) -> "MLPProbe | LinearProbeMultilabel | tuple":
+        """Train from pre-computed (X, Y) tensors, skipping data construction.
+
+        Use this in tight loops (e.g. iterating over layers) to avoid
+        re-running _build_training_data on every call.  Pass X and Y already
+        on the target device for maximum efficiency.
+
+        batch_size defaults to len(X) (full-batch) when None.
+        return_on_device keeps the probe on the training device after training
+        (useful for computing gradient directions before moving to CPU).
+        """
+        if len(X) == 0:
+            raise ValueError("X is empty — no activations to train on.")
+
+        input_dim = X.shape[1]
+        _batch_size = len(X) if batch_size is None else batch_size
+
+        history: list[dict] = []
+        if method == "mlp":
+            probe: MLPProbe | LinearProbeMultilabel = MLPProbe(
+                input_dim=input_dim,
+                num_labels=len(labels),
+                hidden_dim=hidden_dim,
+                labels=labels,
+            )
+            history = self._train_mlp(probe, X, Y, epochs, _batch_size, lr, device, show_progress, progress_fn, return_on_device=return_on_device)
+        elif method == "linear":
+            probe = LinearProbeMultilabel(
+                input_dim=input_dim,
+                num_labels=len(labels),
+                labels=labels,
+            )
+            self._train_linear(probe, X.cpu(), Y.cpu())
+        else:
+            raise ValueError(f"Unknown method {method!r}. Choose 'mlp' or 'linear'.")
+
+        probe.eval()
+        if return_history:
+            return probe, history
+        return probe
+
     def train(
         self,
         extraction_result: "ExtractionResult",
@@ -408,6 +465,7 @@ class MLPProbeTrainer:
         device: str | torch.device,
         show_progress: bool,
         progress_fn=None,
+        return_on_device: bool = False,
     ) -> list[dict]:
         """Train MLP probe and return per-epoch history."""
         probe.to(device)
@@ -437,7 +495,7 @@ class MLPProbeTrainer:
                 logits = probe(X[batch_idx])
                 loss = criterion(logits, Y[batch_idx])
                 optimizer.zero_grad()
-                loss.backward()
+                torch.autograd.backward([loss])
                 optimizer.step()
                 epoch_loss += loss.item() * len(batch_idx)
                 preds = (torch.sigmoid(logits.detach()) >= 0.5).float()
@@ -451,7 +509,8 @@ class MLPProbeTrainer:
             if show_progress and hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{acc:.3f}")
 
-        probe.cpu()
+        if not return_on_device:
+            probe.cpu()
         return history
 
     # ------------------------------------------------------------------

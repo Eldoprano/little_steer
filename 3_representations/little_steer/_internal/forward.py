@@ -107,10 +107,6 @@ def run_forward_pass(
             elif do_stop:
                 tracer.stop()
 
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
     return ForwardPassResult(
         layer_acts=layer_acts,
         logits=logits_saved,

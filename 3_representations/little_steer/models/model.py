@@ -66,6 +66,12 @@ class LittleSteerModel:
         self.model_id = model_id
         self._custom_chat_template = custom_chat_template
 
+        if not use_pretrained_loading and torch_dtype == "auto":
+            # nnsight's meta-init path (from_config) passes torch_dtype directly to
+            # HF transformers which calls getattr(torch, dtype) — "auto" is not a
+            # torch attribute. Substitute a concrete dtype so the init doesn't crash.
+            torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
         if use_pretrained_loading:
             # dispatch=True tells nnsight to use from_pretrained directly,
             # skipping the from_config meta-init that fails on multimodal configs.

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "altair>=6.1.0",
-    "marimo>=0.23.4",
+    "marimo==0.23.5",
     "polars>=1.40.1",
     "thesis-schema",
 ]
@@ -38,3 +38,6 @@ thesis-schema = { path = "../data" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["little_steer"]
+
+[tool.marimo.runtime]
+output_max_bytes = 20_000_000

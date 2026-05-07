@@ -119,6 +119,7 @@ class EvaluationResult:
     method: str
     aggregation: str
     auroc: float
+    auprc: float
     f1: float
     precision: float
     recall: float

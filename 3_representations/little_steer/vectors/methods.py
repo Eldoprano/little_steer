@@ -192,14 +192,16 @@ class LinearProbe:
     def compute_with_score(
         target: list[torch.Tensor],
         baseline: list[torch.Tensor],
+        cross_validate: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor, float]:
         """Return (steering_vector, probe_accuracy).
 
-        Useful for evaluating how separable the categories are at this layer.
+        Args:
+            cross_validate: If True, compute accuracy via k-fold CV (slower but unbiased).
+                            If False (default), returns training accuracy (fast, good enough
+                            for comparing separability across layers).
         """
-        from sklearn.model_selection import cross_val_score
-
         X_target = _stack(target)
         X_baseline = _stack(baseline)
         X = np.vstack([X_target, X_baseline])
@@ -214,10 +216,15 @@ class LinearProbe:
             solver="lbfgs", class_weight="balanced",
         )
 
-        n_folds = min(5, min(np.sum(y == 0), np.sum(y == 1)), len(y) // 2)
-        n_folds = max(2, n_folds)
-        cv_scores = cross_val_score(clf, X_scaled, y, cv=n_folds)
-        accuracy = float(cv_scores.mean())
+        if cross_validate:
+            from sklearn.model_selection import cross_val_score
+            n_folds = min(5, min(np.sum(y == 0), np.sum(y == 1)), len(y) // 2)
+            n_folds = max(2, n_folds)
+            cv_scores = cross_val_score(clf, X_scaled, y, cv=n_folds)
+            accuracy = float(cv_scores.mean())
+        else:
+            clf.fit(X_scaled, y)
+            accuracy = float(clf.score(X_scaled, y))
 
         vector = LinearProbe.compute(target, baseline, **kwargs)
         return vector, accuracy

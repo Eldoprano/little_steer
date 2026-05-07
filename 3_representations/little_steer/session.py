@@ -279,13 +279,18 @@ class Session:
         else:
             iterator = self.entries
 
-        for entry in iterator:
+        for _eval_i, entry in enumerate(iterator):
             ctx = self.context(entry)
             if ctx is None:
                 continue
             fwd = self.forward(entry, required_layers, need_logits=any_needs_logits)
             if fwd is None:
                 continue
+
+            if _eval_i % 50 == 49:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             for agg_name in agg_list:
                 ts_agg = _resolve_aggregation(agg_name)
@@ -350,6 +355,9 @@ class Session:
                             bucket = "present" if label in span_labels else "absent"
                             acc[agg_name][key][bucket].append(float(sim_row[j]))
 
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return _compile_eval_results(acc)
 
     def score(
@@ -384,13 +392,18 @@ class Session:
 
         iterator = tqdm(self.entries, desc="Scoring dataset") if show_progress else self.entries
 
-        for entry in iterator:
+        for _score_i, entry in enumerate(iterator):
             ctx = self.context(entry)
             if ctx is None:
                 continue
             fwd = self.forward(entry, required_layers, need_logits=ts.needs_logits)
             if fwd is None:
                 continue
+
+            if _score_i % 50 == 49:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             per_layer_acts: dict[int, list[torch.Tensor]] = {l: [] for l in required_layers}
             per_span_label_sets: list[set[str]] = []
@@ -436,6 +449,9 @@ class Session:
                             acc[key][2] += float(sim_row[j])
                             acc[key][3] += 1
 
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         scores: list[BehaviorScore] = []
         for (label, method, layer), (sp, np_, sa, na) in acc.items():
             scores.append(BehaviorScore(
@@ -631,8 +647,7 @@ def _compile_eval_results(
     """Turn accumulated present/absent similarity buckets into EvaluationResults."""
     from sklearn.metrics import (
         confusion_matrix as sk_cm,
-        f1_score,
-        precision_recall_fscore_support,
+        precision_recall_curve,
         roc_auc_score,
     )
 
@@ -650,7 +665,7 @@ def _compile_eval_results(
             if n_p == 0 or n_a == 0:
                 results.append(EvaluationResult(
                     label=label, layer=layer, method=method, aggregation=agg_name,
-                    auroc=float("nan"), f1=0.0, precision=0.0, recall=0.0,
+                    auroc=float("nan"), auprc=float("nan"), f1=0.0, precision=0.0, recall=0.0,
                     threshold=0.0, confusion_matrix=np.zeros((2, 2), dtype=int),
                     mean_present=mean_p, mean_absent=mean_a,
                     n_present=n_p, n_absent=n_a,
@@ -664,24 +679,35 @@ def _compile_eval_results(
             except Exception:
                 auroc = float("nan")
 
-            best_f1, best_thr, best_p, best_r = 0.0, 0.0, 0.0, 0.0
-            thresholds = np.linspace(min(y_scores), max(y_scores), 100)
-            for thr in thresholds:
-                preds = [1 if s >= thr else 0 for s in y_scores]
-                f1 = f1_score(y_true, preds, zero_division=0)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_thr = float(thr)
-                    p, r, _, _ = precision_recall_fscore_support(
-                        y_true, preds, average="binary", zero_division=0,
-                    )
-                    best_p, best_r = float(p), float(r)
+            from sklearn.metrics import average_precision_score
+            try:
+                auprc = float(average_precision_score(y_true, y_scores))
+            except Exception:
+                auprc = float("nan")
+
+            precision, recall, thresholds = precision_recall_curve(y_true, y_scores)
+            
+            # Add a small epsilon to avoid division by zero
+            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-15)
+            best_idx = int(np.argmax(f1_scores))
+            
+            best_f1 = float(f1_scores[best_idx])
+            best_p = float(precision[best_idx])
+            best_r = float(recall[best_idx])
+            
+            # precision_recall_curve returns thresholds array of length N-1
+            # so the last precision/recall value (which is 1.0, 0.0) doesn't have a threshold
+            if best_idx < len(thresholds):
+                best_thr = float(thresholds[best_idx])
+            else:
+                best_thr = float(max(y_scores)) if y_scores else 0.0
+
             preds = [1 if s >= best_thr else 0 for s in y_scores]
             cm = sk_cm(y_true, preds, labels=[0, 1])
 
             results.append(EvaluationResult(
                 label=label, layer=layer, method=method, aggregation=agg_name,
-                auroc=auroc, f1=best_f1, precision=best_p, recall=best_r,
+                auroc=auroc, auprc=auprc, f1=best_f1, precision=best_p, recall=best_r,
                 threshold=best_thr, confusion_matrix=cm,
                 mean_present=mean_p, mean_absent=mean_a,
                 n_present=n_p, n_absent=n_a,

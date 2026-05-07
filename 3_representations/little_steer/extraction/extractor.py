@@ -148,7 +148,12 @@ class ActivationExtractor:
             if not success:
                 # OOM or other error — continue with next conversation
                 continue
+            if metadata.n_conversations % 50 == 0:
+                gc.collect()
+                torch.cuda.empty_cache()
 
+        gc.collect()
+        torch.cuda.empty_cache()
         metadata.total_time_s = time.time() - t0
         print(
             f"\n✅ Extraction complete: {metadata.n_annotations_processed} annotations "
@@ -350,9 +355,5 @@ class ActivationExtractor:
         except Exception as e:
             warnings.warn(f"Error processing conversation '{entry.id}': {e}")
             return False
-
-        finally:
-            gc.collect()
-            torch.cuda.empty_cache()
 
         return True

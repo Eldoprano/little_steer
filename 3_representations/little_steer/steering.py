@@ -54,7 +54,11 @@ def steered_generate(
     top_p: float = 0.9,
     add_generation_prompt: bool = True,
     response_only: bool = False,
-) -> str:
+    prompt_only: bool = False,
+    n_steered_tokens: int | None = None,
+    n_steered_sentences: int | None = None,
+    return_steered_mask: bool = False,
+) -> "str | tuple[str, list[bool]]":
     """Generate text with optional activation steering.
 
     Adds ``alpha * steering_vec`` to the residual stream at ``layer`` on every
@@ -83,15 +87,27 @@ def steered_generate(
         add_generation_prompt:
                          Append the model's generation prompt after messages
                          (usually True for the standard single-turn use case).
-        response_only:   If True, only inject the steering vector at the
-                         newly-generated assistant tokens; leave the prompt
-                         prefill untouched. Default False keeps the historical
-                         behaviour (steer everywhere). Implemented via a manual
-                         forward hook that gates on ``output_seq_len > prompt_len``.
+        response_only:   If True, only inject on newly-generated assistant tokens;
+                         leave the prompt prefill untouched. Implemented via a
+                         forward hook that gates on ``hidden.shape[1] == 1``.
+        prompt_only:     If True, only inject during prompt prefill. The altered
+                         activations are cached in the KV cache, so future token
+                         generations are influenced via attention — a subtler
+                         effect than decoding-time steering.
+        n_steered_tokens: If set, stop steering after this many generated tokens.
+                         Subsequent tokens are generated without the vector.
+        n_steered_sentences: If set, stop steering after this many complete
+                         sentences (detected by `.`, `!`, `?`, `\\n` in decoded tokens).
+        return_steered_mask: If True, returns ``(text, mask)`` where ``mask``
+                         is a list of booleans (one per generated token) that is
+                         True for tokens generated while the hook was active.
+                         Only meaningful when n_steered_tokens or
+                         n_steered_sentences are set (otherwise all are True or
+                         all are False depending on phase).
 
     Returns:
-        The generated text as a plain string (only the newly generated tokens,
-        special tokens stripped).
+        The generated text as a plain string when return_steered_mask=False.
+        A (text, mask) tuple when return_steered_mask=True.
 
     Example:
         sv = vectors.filter(label="II_STATE_ETHICAL_MORAL_CONCERN",
@@ -164,23 +180,30 @@ def steered_generate(
 
     st = model.st  # nnterp StandardizedTransformer (nnsight LanguageModel)
 
-    if response_only and raw_vec is not None and steer_layer is not None:
-        # Manual PyTorch forward hook gating on sequence-position dimension.
-        # With HF generate's KV cache (default), the prompt is processed in one
-        # forward pass with hidden.shape[1] == prompt_len, then each generated
-        # token comes through with hidden.shape[1] == 1. So we steer iff
-        # shape[1] == 1 — i.e. only on the model's own response tokens.
-        layers_list = (
-            [steer_layer] if isinstance(steer_layer, int) else list(steer_layer)
+    _needs_hook = raw_vec is not None and steer_layer is not None and (
+        response_only or prompt_only
+        or n_steered_tokens is not None
+        or n_steered_sentences is not None
+    )
+
+    steered_mask: list[bool] = []
+
+    if _needs_hook:
+        layers_list = [steer_layer] if isinstance(steer_layer, int) else list(steer_layer)
+        steering_hook, lm_head_hook = _build_phase_hooks(
+            model, raw_vec, alpha,
+            response_only=response_only,
+            prompt_only=prompt_only,
+            n_steered_tokens=n_steered_tokens,
+            n_steered_sentences=n_steered_sentences,
+            steered_mask=steered_mask,
         )
         handles: list = []
         try:
             for li in layers_list:
-                handles.append(
-                    model.layers[li].register_forward_hook(
-                        _response_only_hook_factory(raw_vec, alpha)
-                    )
-                )
+                handles.append(model.layers[li].register_forward_hook(steering_hook))
+            if lm_head_hook is not None:
+                handles.append(model.st.lm_head.register_forward_hook(lm_head_hook))
             with st.generate(input_ids, **gen_kwargs) as _gen:
                 output_ids = st.generator.output.save()
         finally:
@@ -189,26 +212,56 @@ def steered_generate(
     else:
         with st.generate(input_ids, **gen_kwargs) as _gen:
             if raw_vec is not None and steer_layer is not None:
-                # steer() handles device placement and accepts int or list[int]
                 st.steer(steer_layer, raw_vec, factor=alpha)
             output_ids = st.generator.output.save()
 
     # Decode only the newly generated tokens
     new_tokens = output_ids[0][input_ids.shape[1]:]
-    return model.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    text = model.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    if return_steered_mask:
+        n_new = len(new_tokens)
+        # Pad or trim mask to match actual number of new tokens
+        mask = steered_mask[:n_new]
+        while len(mask) < n_new:
+            mask.append(False)
+        return text, mask
+    return text
 
 
-def _response_only_hook_factory(vector: torch.Tensor, alpha: float):
-    """Build a PyTorch forward hook that only fires on generation steps.
+def _build_phase_hooks(
+    model: "LittleSteerModel",
+    vector: torch.Tensor,
+    alpha: float,
+    *,
+    response_only: bool = False,
+    prompt_only: bool = False,
+    n_steered_tokens: int | None = None,
+    n_steered_sentences: int | None = None,
+    steered_mask: "list[bool] | None" = None,
+):
+    """Build steering hook(s) for various phase modes.
 
-    Layer outputs during prefill have shape (batch, prompt_len, hidden);
-    during generation they have shape (batch, 1, hidden). The single-token
-    shape is the discriminator: when we see it we add ``alpha * vector`` to
-    the residual stream; otherwise we pass through unchanged.
+    Returns:
+        (steering_hook, lm_head_hook) — lm_head_hook is None when not needed.
+
+    Phase semantics
+    ---------------
+    response_only:      Fire only on single-token decode steps (shape[1] == 1).
+    prompt_only:        Fire only on multi-token prefill steps (shape[1] > 1).
+    n_steered_tokens:   Fire on decode steps; count inside steering_hook, stop at N.
+    n_steered_sentences: Fire until N sentence-ending tokens have been generated
+                         (tracked via lm_head hook on logit argmax).
+    steered_mask:       Optional list to append per-decode-step booleans indicating
+                        whether the vector was active for that step.
     """
     cached_vec = vector.detach().clone()
 
-    def hook(_module, _inputs, output):
+    # Shared mutable state (list cells as mutable closures)
+    active = [True]
+    decode_count = [0]      # counts decode steps where hook fired (for n_tokens)
+    sentence_count = [0]    # counts sentence-ending tokens (for n_sentences)
+
+    def steering_hook(_module, _inputs, output):
         if isinstance(output, tuple):
             hidden = output[0]
             rest = output[1:]
@@ -216,17 +269,65 @@ def _response_only_hook_factory(vector: torch.Tensor, alpha: float):
             hidden = output
             rest = None
 
-        # Only intervene during single-token decode steps.
-        if hidden.shape[1] != 1:
+        is_decode = hidden.shape[1] == 1
+
+        # Gate on phase
+        if prompt_only:
+            if is_decode:
+                if steered_mask is not None:
+                    steered_mask.append(False)
+                return output
+        else:
+            # response_only / n_tokens / n_sentences — skip prefill
+            if not is_decode:
+                return output
+
+        if steered_mask is not None and is_decode:
+            steered_mask.append(active[0])
+
+        if not active[0]:
             return output
 
         v = cached_vec.to(hidden.device).to(hidden.dtype)
         new_hidden = hidden + alpha * v
+
+        # n_steered_tokens: count decode steps where we actually applied the vector
+        if is_decode and n_steered_tokens is not None:
+            decode_count[0] += 1
+            if decode_count[0] >= n_steered_tokens:
+                active[0] = False
+
         if rest is not None:
             return (new_hidden,) + rest
         return new_hidden
 
-    return hook
+    lm_head_hook = None
+    if n_steered_sentences is not None:
+        tokenizer = model.tokenizer
+
+        def _lm_head_hook(_module, _inputs, output):
+            logits = output[0] if isinstance(output, tuple) else output
+            # Only track during decode steps (seq_len == 1)
+            # Handle both (batch, seq, vocab) and (batch, vocab) shapes
+            if logits.ndim == 3 and logits.shape[1] != 1:
+                return output
+            if not active[0]:
+                return output
+
+            # Get the predicted next-token id from the last position
+            flat_logits = logits.view(-1, logits.shape[-1])  # (batch*seq, vocab)
+            next_id = int(flat_logits[-1].argmax())
+            token_text = tokenizer.decode([next_id])
+            if any(c in token_text for c in ".!?\n"):
+                sentence_count[0] += 1
+                if sentence_count[0] >= n_steered_sentences:
+                    active[0] = False
+
+            return output
+
+        lm_head_hook = _lm_head_hook
+
+    return steering_hook, lm_head_hook
 
 
 def multi_steered_generate(
@@ -239,11 +340,15 @@ def multi_steered_generate(
     temperature: float = 0.6,
     top_p: float = 0.9,
     add_generation_prompt: bool = True,
+    response_only: bool = False,
 ) -> str:
     """Generate text with multiple steering vectors applied simultaneously.
 
     Allows composing multiple behaviour directions — e.g. steer towards
     safety concern awareness while steering away from sycophancy.
+
+    Uses forward hooks (not nnsight st.steer) so multiple vectors at the same
+    layer accumulate additively — each hook appends its delta independently.
 
     Args:
         model:            LittleSteerModel instance.
@@ -257,6 +362,8 @@ def multi_steered_generate(
         temperature:      Sampling temperature.
         top_p:            Nucleus sampling mass.
         add_generation_prompt: Append generation prompt after messages.
+        response_only:    If True, only inject on newly-generated tokens
+                          (skip prefill), same semantics as steered_generate.
 
     Returns:
         Generated text string.
@@ -270,7 +377,7 @@ def multi_steered_generate(
     from .vectors.steering_vector import SteeringVector as _SV
 
     # Resolve all steering specs
-    resolved: list[tuple[torch.Tensor, int | list[int], float]] = []
+    resolved: list[tuple[torch.Tensor, int, float]] = []
     for vec, layer, alpha in steering_specs:
         if alpha == 0.0:
             continue
@@ -316,10 +423,40 @@ def multi_steered_generate(
         gen_kwargs["top_p"] = top_p
 
     st = model.st
-    with st.generate(input_ids, **gen_kwargs) as _gen:
+
+    def _make_hook(cached_vec: torch.Tensor, a: float):
+        """Return a forward hook that adds alpha*vec to the layer output."""
+        def _hook(_module, _inputs, output):
+            if isinstance(output, tuple):
+                hidden = output[0]
+                rest = output[1:]
+            else:
+                hidden = output
+                rest = None
+            is_decode = hidden.shape[1] == 1
+            if response_only and not is_decode:
+                return output
+            v = cached_vec.to(hidden.device).to(hidden.dtype)
+            new_hidden = hidden + a * v
+            if rest is not None:
+                return (new_hidden,) + rest
+            return new_hidden
+        return _hook
+
+    handles: list = []
+    try:
         for raw_vec, steer_layer, alpha in resolved:
-            st.steer(steer_layer, raw_vec, factor=alpha)
-        output_ids = st.generator.output.save()
+            cached = raw_vec.detach().clone()
+            handles.append(
+                model.layers[steer_layer].register_forward_hook(
+                    _make_hook(cached, alpha)
+                )
+            )
+        with st.generate(input_ids, **gen_kwargs) as _gen:
+            output_ids = st.generator.output.save()
+    finally:
+        for h in handles:
+            h.remove()
 
     new_tokens = output_ids[0][input_ids.shape[1]:]
     return model.tokenizer.decode(new_tokens, skip_special_tokens=True)
