@@ -264,6 +264,8 @@ def _map_reasoning_role(
     For models with thinking support (Qwen3, DeepSeek-R1, Phi-4, Magistral ...):
       - If the chat template has a native 'reasoning_content' field (e.g. Qwen3),
         passes it as a separate key so the template formats it exactly as trained.
+      - If the chat template has a native 'thinking' field (e.g. gpt-oss),
+        passes reasoning there so it lands in the model's analysis channel.
       - Otherwise, manually wraps reasoning in <think>...</think> inside the
         assistant message content.
 
@@ -272,6 +274,7 @@ def _map_reasoning_role(
     """
     template = getattr(tokenizer, "chat_template", "") or ""
     has_native_reasoning_field = "reasoning_content" in template
+    has_native_thinking_field = "message.thinking" in template or "thinking" in template
 
     result: list[dict[str, str]] = []
     i = 0
@@ -289,6 +292,15 @@ def _map_reasoning_role(
                             "role": "assistant",
                             "content": assistant_text,
                             "reasoning_content": reasoning_text,
+                        })
+                    elif has_native_thinking_field:
+                        # gpt-oss uses Harmony channels and expects chain-of-thought
+                        # text in the assistant `thinking` field. The tokenizer
+                        # template renders this as the analysis channel.
+                        result.append({
+                            "role": "assistant",
+                            "content": assistant_text,
+                            "thinking": reasoning_text,
                         })
                     else:
                         # Manual wrapping for models without the native field.
@@ -363,7 +375,17 @@ def _model_supports_thinking(tokenizer: PreTrainedTokenizerBase) -> bool:
     model_name = getattr(tokenizer, "name_or_path", "") or ""
     model_name_lower = model_name.lower()
 
-    thinking_indicators = ["qwen3", "deepseek-r1", "qwq", "deepseek-reasoner", "phi-4", "ministral", "magistral", "gemma-4"]
+    thinking_indicators = [
+        "qwen3",
+        "deepseek-r1",
+        "qwq",
+        "deepseek-reasoner",
+        "phi-4",
+        "ministral",
+        "magistral",
+        "gemma-4",
+        "gpt-oss",
+    ]
     if any(ind in model_name_lower for ind in thinking_indicators):
         return True
 
@@ -375,7 +397,7 @@ def _model_supports_thinking(tokenizer: PreTrainedTokenizerBase) -> bool:
 
     # Check chat template for thinking keywords
     template = getattr(tokenizer, "chat_template", "") or ""
-    if "<think>" in template or "enable_thinking" in template:
+    if "<think>" in template or "enable_thinking" in template or "message.thinking" in template:
         return True
 
     return False

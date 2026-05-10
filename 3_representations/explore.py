@@ -8,6 +8,21 @@ app = marimo.App(width="medium", app_title="Behavior Detection Explorer")
 def _():
     import marimo as mo
     import sys, os
+
+    # Force LD_LIBRARY_PATH to include nvidia libraries in the venv
+    _venv_site = os.path.join(os.path.dirname(__file__), ".venv", "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+    if os.path.exists(_venv_site):
+        _nv_paths = []
+        for _pkg in ["cudnn", "cublas", "cuda_runtime", "nccl", "cuda_nvrtc"]:
+            _p = os.path.join(_venv_site, "nvidia", _pkg, "lib")
+            if os.path.exists(_p):
+                _nv_paths.append(_p)
+
+        if _nv_paths:
+            _current = os.environ.get("LD_LIBRARY_PATH", "")
+            _new = ":".join(_nv_paths)
+            os.environ["LD_LIBRARY_PATH"] = f"{_new}:{_current}" if _current else _new
+
     import torch
     import numpy as np
     import polars as pl
@@ -18,14 +33,11 @@ def _():
         sys.path.insert(0, os.path.dirname(__file__))
 
     import little_steer as ls
-
-
-    return ls, mo, np, torch
+    return alt, ls, mo, np, os, pl, sys, torch
 
 
 @app.cell
-def _():
-    # Everforest Color Scheme and Global Styles
+def _(mo):
     _css = """
     :root {
       --bg: #2d353b;
@@ -312,7 +324,12 @@ def _(available_judges, mo):
 def _(all_annotated, cfg_judge, cfg_n_entries, mo):
     """Filter entries by selected judge, apply activation, sample N."""
     import random as _random
-    _judge_name = cfg_judge.value
+    
+    try:
+        _judge_name = cfg_judge.value
+    except (NameError, AttributeError):
+        mo.stop(True, mo.md("⚠️ `cfg_judge` is not defined. Try restarting the marimo server."))
+        
     mo.stop(_judge_name is None, mo.md("⚠️ No judge selected."))
 
     # Filter to entries that have a label_run from this judge
@@ -535,7 +552,8 @@ def _(cfg_labels, compare_btn, extraction_result, ls, mo, np, torch):
             _probe = ls.MLPProbe(_X.shape[1], len(_labels_present), hidden_dim=128, labels=_labels_present)
             _trainer._train_mlp(
                 _probe, _X[_tr], _Y[_tr],
-                epochs=30, batch_size=32, lr=1e-3, device="cpu",
+                epochs=30, batch_size=32, lr=1e-3,
+                device="cuda" if torch.cuda.is_available() else "cpu",
                 show_progress=False,
             )
             with torch.no_grad():
@@ -679,6 +697,7 @@ def _(
             itr, title="Training MLP probe…", completion_title="Training done!"
         ),
         return_history=True,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
     set_probe_state(_probe)
 

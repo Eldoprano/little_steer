@@ -29,6 +29,7 @@ htmlcov/
 *.ipynb
 # Track the demo notebook
 !little_steer_test.ipynb
+!3_representations/showcase.ipynb
 
 # Data / checkpoints (usually large)
 *.pkl
@@ -121,3 +122,7 @@ data/dataset.lock
 *.bkp
 2_labeling/2c_human_labeling/vite.config.ts
 .gitignore
+
+.agents/
+.codex
+skills-lock.json
