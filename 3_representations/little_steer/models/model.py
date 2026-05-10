@@ -13,12 +13,16 @@ Adds:
 from __future__ import annotations
 
 from typing import Any
+import os
 
 import torch
 from nnterp import StandardizedTransformer
 from nnterp.rename_utils import RenameConfig
+from rich.console import Console
 
 from ..data.tokenizer_utils import TokenPositionMapper, _map_reasoning_role
+
+console = Console()
 
 
 class LittleSteerModel:
@@ -85,17 +89,62 @@ class LittleSteerModel:
         if attn_rename or mlp_rename:
             rename_config = RenameConfig(attn_name=attn_rename, mlp_name=mlp_rename)
 
-        print(f"🔄 Loading {model_id} via nnterp...")
-        self.st = StandardizedTransformer(
-            model_id,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            rename_config=rename_config,
-            **hf_kwargs,
-        )
+        def load_with_impl(impl: str):
+            kwargs = hf_kwargs.copy()
+            kwargs["attn_implementation"] = impl
+            
+            # Automatically handle disk offloading if device_map is used
+            if device_map is not None and "offload_folder" not in kwargs:
+                offload_base = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+                offload_dir = os.path.join(offload_base, "offload", model_id.replace("/", "--"))
+                os.makedirs(offload_dir, exist_ok=True)
+                kwargs["offload_folder"] = offload_dir
+
+            return StandardizedTransformer(
+                model_id,
+                device_map=device_map,
+                torch_dtype=torch_dtype,
+                rename_config=rename_config,
+                **kwargs,
+            )
+
+        requested_impl = hf_kwargs.get("attn_implementation")
+        
+        # Determine best default implementation if not specified
+        if requested_impl is None:
+            # Chain of fallbacks from fastest to most compatible
+            impls = ["flash_attention_2", "sdpa", "eager"]
+            if not torch.cuda.is_available():
+                impls = ["sdpa", "eager"]
+            
+            self.st = None
+            for i, impl in enumerate(impls):
+                try:
+                    # Only print the "trying" message for the first attempt
+                    if i == 0:
+                        console.print(f"[bold]Loading {model_id} via nnterp[/bold] (trying {impl})...")
+                    
+                    self.st = load_with_impl(impl)
+                    if i > 0:
+                        console.print(f"[green]Loaded with {impl}[/green] (degraded).")
+                    break
+                except (ImportError, ValueError, RuntimeError) as e:
+                    first_line = str(e).splitlines()[0]
+                    if i < len(impls) - 1:
+                        console.print(
+                            f"[yellow]{impl} failed; trying {impls[i+1]}[/yellow] "
+                            f"({first_line})"
+                        )
+                    else:
+                        console.print("[red]All attention implementations failed.[/red]")
+                        raise e
+        else:
+            console.print(f"[bold]Loading {model_id} via nnterp[/bold] ({requested_impl})...")
+            self.st = load_with_impl(requested_impl)
+
         self._token_mapper = TokenPositionMapper(self.st.tokenizer)
-        print(
-            f"✅ {model_id} loaded — "
+        console.print(
+            f"[green]{model_id} loaded[/green] — "
             f"{self.num_layers} layers, hidden_size={self.hidden_size}"
         )
 

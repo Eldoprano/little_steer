@@ -124,7 +124,7 @@ def _(mo):
 @app.cell
 def _(mo):
     cfg_model_id = mo.ui.text(
-        value="Qwen/Qwen3.5-4B",
+        value="openai/gpt-oss-20b",
         label="Model ID",
         full_width=True,
     )
@@ -222,9 +222,17 @@ def _(mo):
 
 @app.cell
 def _():
+    import importlib
     import torch
+    import little_steer.data.tokenizer_utils as _tokenizer_utils
+    import little_steer.models.model as _model_module
     import little_steer as ls
 
+    # Reload this small module so a running marimo kernel picks up model-specific
+    # chat-template mapping fixes without requiring a full notebook restart.
+    importlib.reload(_tokenizer_utils)
+    importlib.reload(_model_module)
+    ls.LittleSteerModel = _model_module.LittleSteerModel
     return ls, torch
 
 
@@ -237,6 +245,8 @@ def _(cfg_data_path, cfg_model_id, load_btn, ls, mo, torch):
         _kwargs = {}
         if "Qwen" in _model_id:
             _kwargs["attn_rename"] = "linear_attn"
+        if "gpt-oss" in _model_id.lower():
+            _kwargs.setdefault("attn_implementation", "eager")
         model = ls.LittleSteerModel(
             _model_id,
             device_map="auto",
@@ -285,9 +295,12 @@ def _(cfg_data_path, cfg_model_id, load_btn, ls, mo, torch):
             _judge_counts[_lr.judge_name] = _judge_counts.get(_lr.judge_name, 0) + 1
     available_judges = sorted(_judge_counts, key=lambda j: -_judge_counts[j])
 
+    _avail_models = sorted({e.model for e in all_annotated if e.model})
+
     mo.md(
         f"✅ **{model}**  \n"
         f"Dataset: **{len(all_annotated)}** annotated entries  \n"
+        f"Models available: {', '.join(f'`{m}`' for m in _avail_models)}  \n"
         f"Safe-prompt baseline candidates: **{len(safe_prompt_entries)}**  \n"
         f"Layers: **{model.num_layers}** · Hidden size: **{model.hidden_size}**  \n"
         f"Judges available: {', '.join(f'`{j}` ({_judge_counts[j]})' for j in available_judges)}"
@@ -391,7 +404,7 @@ def _(
         )
         if _lr_prev is None:
             continue
-        
+
         _entry_had_match = False
         for _sa_prev, _sp_prev in zip(_lr_prev.sentence_annotations, _lr_prev.spans):
             _labels_here = list(_sp_prev.labels)
@@ -403,19 +416,19 @@ def _(
                     _lps = _lpm.get(_lbl)
                     return _math2.exp(sum(_lps)) if _lps else None
                 _labels_here = [lbl for lbl in _labels_here if (_c := _conf_prev(lbl)) is None or _c >= _lp_thresh_prev]
-        
+
             for _lbl_prev in _labels_here:
                 if _selected_labels_prev is None or _lbl_prev in _selected_labels_prev:
                     _label_counts[_lbl_prev] = _label_counts.get(_lbl_prev, 0) + 1
                     _entry_had_match = True
-    
+
         if _entry_had_match:
             _matching_entries_count += 1
 
     def _get_output():
         if not _label_counts:
             return mo.callout(mo.md("No spans match the current filters."), kind="danger")
-    
+
         _counts_df = pl.DataFrame([{"label": k, "spans": v} for k, v in sorted(_label_counts.items(), key=lambda x: -x[1])])
         _preview_chart = (
             alt.Chart(_counts_df.to_pandas())
@@ -541,8 +554,8 @@ def _():
 def _(SAFE_PROMPT_LABEL, mo, safe_prompt_entries):
     _spec_options = [
         "whole_sentence",
-        "last_token",
         "first_token",
+        "last_token",
         "first_3_tokens",
         "last_3_tokens",
         "bleed_5_all",
@@ -551,7 +564,7 @@ def _(SAFE_PROMPT_LABEL, mo, safe_prompt_entries):
     ]
     cfg_extraction_specs = mo.ui.multiselect(
         options=_spec_options,
-        value=["first_3_tokens", "last_3_tokens", "skip_first_2_all"],
+        value=["whole_sentence", "first_token"],
         label="Readout positions inside each labeled span",
     )
     cfg_include_safe_baseline = mo.ui.checkbox(
@@ -572,7 +585,7 @@ def _(SAFE_PROMPT_LABEL, mo, safe_prompt_entries):
     })
     cfg_safe_dataset_filter = mo.ui.multiselect(
         options=_safe_ds_names,
-        value=_safe_ds_names,
+        value=["lima"],
         label="Safe-prompt datasets to use as baseline",
     )
     mo.vstack([
@@ -614,6 +627,8 @@ def _(
     cfg_include_safe_baseline,
     cfg_labels,
     cfg_layer_stride,
+    cfg_model_id,
+    cfg_model_filter,
     cfg_safe_baseline_n,
     cfg_safe_dataset_filter,
     entries,
@@ -650,7 +665,7 @@ def _(
         "skip_first_2_all": lambda: ls.TokenSelection("all", bleed_before=-2),
         "pre_context_last": lambda: ls.TokenSelection("last", bleed_before=5),
     }
-    _selected_specs = cfg_extraction_specs.value or ["first_3_tokens", "last_3_tokens", "skip_first_2_all"]
+    _selected_specs = cfg_extraction_specs.value or ["whole_sentence", "first_token"]
     _specs = {
         name: ls.ExtractionSpec(_spec_factories[name](), layers=_layers)
         for name in _selected_specs
@@ -661,9 +676,11 @@ def _(
     _safe_train_entries = []
     if cfg_include_safe_baseline.value and safe_prompt_entries:
         _safe_ds_set = set(cfg_safe_dataset_filter.value) if cfg_safe_dataset_filter.value else None
+        _model_set = set(cfg_model_filter.value) if cfg_model_filter.value else None
         _safe_candidates = [
             e for e in safe_prompt_entries
-            if _safe_ds_set is None or str((e.metadata or {}).get("dataset_name") or (e.metadata or {}).get("dataset_source") or "unknown") in _safe_ds_set
+            if (_safe_ds_set is None or str((e.metadata or {}).get("dataset_name") or (e.metadata or {}).get("dataset_source") or "unknown") in _safe_ds_set)
+            and (_model_set is None or e.model in _model_set)
         ]
         _rnd.shuffle(_safe_candidates)
         for _entry in _safe_candidates[: cfg_safe_baseline_n.value]:
@@ -709,10 +726,13 @@ def _(
     )
 
     _plan_key = (
+        "reasoning_mapper_v2",
+        cfg_model_id.value,
         tuple(sorted(_specs)),
         tuple(_layers),
         tuple(sorted(_label_filter)) if _label_filter else None,
         cfg_safe_baseline_n.value if cfg_include_safe_baseline.value else 0,
+        tuple(sorted(cfg_safe_dataset_filter.value)) if cfg_include_safe_baseline.value else None,
     )
     if extraction_cache.get("plan_key") != _plan_key:
         extraction_cache["result"] = None

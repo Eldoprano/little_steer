@@ -29,6 +29,7 @@ htmlcov/
 *.ipynb
 # Track the demo notebook
 !little_steer_test.ipynb
+!3_representations/showcase.ipynb
 
 # Data / checkpoints (usually large)
 *.pkl
